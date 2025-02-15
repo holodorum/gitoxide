@@ -192,6 +192,8 @@ pub fn file(
             }
         }
 
+        // Itereer over de parent ids, als de file is aangepast in een van de parent id's dan passeren we de blame als de entry hetzelfde is?!
+        // TODO begrijp wat hier gebeurt.
         for (pid, (parent_id, parent_commit_time)) in parent_ids.iter().enumerate() {
             if let Some(parent_entry_id) = find_path_entry_in_commit(
                 &odb,
@@ -217,6 +219,7 @@ pub fn file(
         let more_than_one_parent = parent_ids.len() > 1;
         for (parent_id, parent_commit_time) in parent_ids {
             queue.insert(parent_commit_time, parent_id);
+            // TODO verschil tree_diff_at_file_path en blob_change?
             let changes_for_file_path = tree_diff_at_file_path(
                 &odb,
                 file_path,
@@ -418,8 +421,8 @@ fn coalesce_blame_entries(lines_blamed: Vec<BlameEntry>) -> Vec<BlameEntry> {
         })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn tree_diff_at_file_path(
+#[allow(clippy::too_many_arguments, missing_docs)]
+pub fn tree_diff_at_file_path(
     odb: impl gix_object::Find + gix_object::FindHeader,
     file_path: &BStr,
     id: ObjectId,
@@ -534,7 +537,8 @@ fn tree_diff_at_file_path(
     }
 }
 
-fn blob_changes(
+#[allow(missing_docs)]
+pub fn blob_changes(
     odb: impl gix_object::Find + gix_object::FindHeader,
     resource_cache: &mut gix_diff::blob::Platform,
     oid: ObjectId,
@@ -623,7 +627,8 @@ fn blob_changes(
     Ok(res)
 }
 
-fn find_path_entry_in_commit(
+#[allow(missing_docs)]
+pub fn find_path_entry_in_commit(
     odb: &impl gix_object::Find,
     commit: &gix_hash::oid,
     file_path: &BStr,
