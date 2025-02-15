@@ -8,6 +8,7 @@ use gix_object::{
     bstr::{BStr, BString, ByteSlice},
     tree, FindExt,
 };
+use gix_trace::debug;
 use gix_traverse::commit::find as find_commit;
 use smallvec::SmallVec;
 use std::num::NonZeroU32;
@@ -107,7 +108,11 @@ pub fn file(
                 &mut buf2,
                 &mut stats,
             )?;
-            process_changes_forward(blame_cache.entries, changes, suspect)
+            debug!("Changes: {:#?}", changes);
+            let (blame_entries, hunks_to_blame) = process_changes_forward(blame_cache.entries, changes, suspect);
+            debug!("Blame entries: {:#?}", blame_entries);
+            debug!("Hunks to blame: {:#?}", hunks_to_blame);
+            (blame_entries, hunks_to_blame)
         }
         None => {
             let hunks_to_blame = initialize_hunks_to_blame(suspect, range_in_blamed_file);

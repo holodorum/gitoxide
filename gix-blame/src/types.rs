@@ -223,57 +223,33 @@ pub enum Change {
     Deleted(u32, u32),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct BlameLines {
     blame_lines: u32,
-    blame: Option<BlameEntry>,
+}
+impl BlameLines {
+    pub(crate) fn get_remaining(&self, blame: &BlameEntry) -> u32 {
+        blame.len.get() - self.blame_lines
+    }
 }
 
-#[derive(Debug)]
+#[derive(Default, Debug)]
 pub(crate) struct ChangeLines {
     change_lines: u32,
-    change: Option<Change>,
 }
 
 pub(crate) trait LinesAssignedTrait {
     fn reset_assigned(&mut self);
-    fn add_assigned(&mut self, lines: u32) -> bool;
+    fn add_assigned(&mut self, lines: u32);
     fn get_assigned(&self) -> u32;
-    fn get_remaining(&self) -> u32;
-}
-
-impl BlameLines {
-    pub(crate) fn new(blame: Option<BlameEntry>) -> Self {
-        Self { blame_lines: 0, blame }
-    }
-
-    pub(crate) fn add_blame(&mut self, blame: Option<BlameEntry>) {
-        self.blame = blame;
-    }
-
-    fn all_lines_assigned(&self) -> bool {
-        self.blame_lines == u32::from(self.blame.as_ref().unwrap().len.get())
-    }
 }
 
 impl ChangeLines {
-    pub(crate) fn new(change: Option<Change>) -> Self {
-        Self {
-            change_lines: 0,
-            change,
-        }
-    }
-
-    pub(crate) fn add_change(&mut self, change: Option<Change>) {
-        self.change = change;
-    }
-
-    fn all_lines_assigned(&self) -> bool {
-        match &self.change {
-            Some(Change::Unchanged(range)) => self.change_lines == range.len() as u32,
-            Some(Change::AddedOrReplaced(range, _)) => self.change_lines == range.len() as u32,
-            Some(Change::Deleted(_, _)) => self.change_lines == self.get_assigned(),
-            None => unreachable!("Don't call this without a change"),
+    pub(crate) fn get_remaining(&self, change: &Change) -> u32 {
+        match &change {
+            Change::Unchanged(range) => range.len() as u32 - self.change_lines,
+            Change::AddedOrReplaced(_, deleted_in_before) => *deleted_in_before - self.change_lines,
+            Change::Deleted(_, deleted_in_before) => *deleted_in_before - self.change_lines,
         }
     }
 }
@@ -283,17 +259,12 @@ impl LinesAssignedTrait for BlameLines {
         self.blame_lines = 0;
     }
 
-    fn add_assigned(&mut self, lines: u32) -> bool {
+    fn add_assigned(&mut self, lines: u32) {
         self.blame_lines += lines;
-        self.all_lines_assigned()
     }
 
     fn get_assigned(&self) -> u32 {
         self.blame_lines
-    }
-
-    fn get_remaining(&self) -> u32 {
-        u32::from(self.blame.as_ref().unwrap().len.get()) - self.blame_lines
     }
 }
 
@@ -302,21 +273,11 @@ impl LinesAssignedTrait for ChangeLines {
         self.change_lines = 0;
     }
 
-    fn add_assigned(&mut self, lines: u32) -> bool {
+    fn add_assigned(&mut self, lines: u32) {
         self.change_lines += lines;
-        self.all_lines_assigned()
     }
 
     fn get_assigned(&self) -> u32 {
         self.change_lines
-    }
-
-    fn get_remaining(&self) -> u32 {
-        match &self.change {
-            Some(Change::Unchanged(range)) => range.len() as u32 - self.change_lines,
-            Some(Change::AddedOrReplaced(_, deleted_in_before)) => *deleted_in_before - self.change_lines,
-            Some(Change::Deleted(_, deleted_in_before)) => *deleted_in_before - self.change_lines,
-            None => unreachable!("Don't call this without a change"),
-        }
     }
 }
