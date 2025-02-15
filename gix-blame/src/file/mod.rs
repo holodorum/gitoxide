@@ -4,8 +4,9 @@ use std::num::NonZeroU32;
 use std::ops::Range;
 
 use gix_hash::ObjectId;
+use gix_trace::debug;
 
-use crate::types::{BlameEntry, Either, LineRange};
+use crate::types::{BlameEntry, BlameLines, ChangeLines, Either, LineRange};
 use crate::types::{Change, Offset, UnblamedHunk};
 
 pub(super) mod function;
@@ -355,6 +356,143 @@ fn process_changes(
         }
     }
     new_hunks_to_blame
+}
+
+/// Consume `cached_blames` and `changes` to pair up matches ranges (also overlapping) with each other.
+/// Once a diff is found, it's pushed onto `new_hunks_to_blame`.
+pub fn process_changes_forward(
+    cached_blames: &[BlameEntry],
+    changes: Vec<Change>,
+    head_id: ObjectId,
+) -> (Vec<BlameEntry>, Vec<UnblamedHunk>) {
+    fn blame_fully_contained_by_change(
+        blame_lines: &BlameLines,
+        blame: &BlameEntry,
+        change_lines: &ChangeLines,
+        change: &Change,
+    ) -> bool {
+        blame_lines.get_remaining(blame) < change_lines.get_remaining(change)
+    }
+
+    let mut updated_blames = Vec::new();
+    let mut new_hunks_to_blame = Vec::new();
+
+    let mut blame_iter = cached_blames.iter().cloned().peekable();
+
+    let mut blame_assigned = BlameLines::default();
+    'change: for change in changes {
+        debug!("-----Change Loop-----");
+
+        let mut change_assigned = ChangeLines::default();
+
+        'blame: while let Some(blame) = blame_iter.peek_mut() {
+            debug!("-----Blame Loop-----");
+            debug!("Remaining Blame Lines: {:?}", blame_assigned.get_remaining(blame));
+            if blame_assigned.get_remaining(blame) == 0 {
+                debug!("Blame fully assigned");
+                blame_iter.next();
+                blame_assigned.assigned.reset_assigned();
+                continue 'blame;
+            } else {
+                debug!("Blame not fully assigned");
+                debug!("Blame before update: {:?}", blame);
+                blame.update_blame(&blame_assigned.assigned);
+                blame_assigned.assigned.reset_assigned();
+                debug!("After update: {:?}", blame);
+            }
+
+            debug!("Lines of Change Assigned: {:?}", change_assigned);
+            debug!("Lines of Blame Assigned: {:?}", blame_assigned);
+
+            match change.clone() {
+                Change::Unchanged(range) => {
+                    debug!("Handling Unchanged: {:?}", range);
+                    match blame_fully_contained_by_change(&blame_assigned, blame, &change_assigned, &change) {
+                        true => {
+                            debug!("Blame fully contained by change");
+                            // Full blame assigned
+                            updated_blames.push(BlameEntry {
+                                start_in_blamed_file: range.start + change_assigned.assigned.get_assigned(),
+                                start_in_source_file: blame.start_in_source_file,
+                                len: blame.len,
+                                commit_id: blame.commit_id,
+                            });
+
+                            // Full Blame Is Assigned
+                            change_assigned.assigned.add_assigned(blame.len.get());
+                            blame_assigned.assigned.add_assigned(blame.len.get());
+                            continue 'blame;
+                        }
+                        false => {
+                            debug!("Change fully contained by blame");
+
+                            // Full change assigned
+                            updated_blames.push(BlameEntry {
+                                start_in_blamed_file: range.start + change_assigned.assigned.get_assigned(),
+                                start_in_source_file: blame.start_in_source_file,
+                                len: NonZeroU32::new(change_assigned.get_remaining(&change)).unwrap(),
+                                commit_id: blame.commit_id,
+                            });
+                            blame_assigned
+                                .assigned
+                                .add_assigned(change_assigned.get_remaining(&change));
+                            continue 'change;
+                        }
+                    }
+                }
+                Change::Deleted(_start_deletion, _lines_deleted) => {
+                    debug!("Handling Deleted: {:?}", _lines_deleted);
+                    match blame_fully_contained_by_change(&blame_assigned, blame, &change_assigned, &change) {
+                        true => {
+                            debug!("Blame fully contained by change");
+                            change_assigned.assigned.add_assigned(blame.len.get());
+                            blame_assigned.assigned.add_assigned(blame.len.get());
+                            continue 'blame;
+                        }
+                        false => {
+                            debug!("Change fully contained by blame");
+                            blame_assigned
+                                .assigned
+                                .add_assigned(change_assigned.get_remaining(&change));
+                            continue 'change;
+                        }
+                    }
+                }
+                Change::AddedOrReplaced(range, lines_deleted) => {
+                    debug!("Handling AddedOrReplaced: {:?}", range);
+                    match blame_fully_contained_by_change(&blame_assigned, blame, &change_assigned, &change) {
+                        true => {
+                            debug!("Blame fully contained by change");
+                            change_assigned.assigned.add_assigned(blame.len.get());
+                            blame_assigned.assigned.add_assigned(blame.len.get());
+                            // Edge case where we would never get to the false arm
+                            if lines_deleted == 0 {
+                                new_hunks_to_blame.push(UnblamedHunk {
+                                    range_in_blamed_file: range.clone(),
+                                    suspects: [(head_id, range)].into(),
+                                });
+                            }
+                        }
+                        false => {
+                            debug!("Change fully contained by blame");
+                            blame_assigned
+                                .assigned
+                                .add_assigned(change_assigned.get_remaining(&change));
+                            new_hunks_to_blame.push(UnblamedHunk {
+                                range_in_blamed_file: range.clone(),
+                                suspects: [(head_id, range)].into(),
+                            });
+                            continue 'change;
+                        }
+                    }
+                }
+            }
+            if change_assigned.get_remaining(&change) == 0 {
+                continue 'change;
+            }
+        }
+    }
+    (updated_blames, new_hunks_to_blame)
 }
 
 impl UnblamedHunk {

@@ -1,12 +1,14 @@
-use super::{process_changes, Change, UnblamedHunk};
+use super::{process_changes, process_changes_forward, Change, UnblamedHunk};
+use crate::types::BlameCacheObject;
 use crate::{BlameEntry, Error, Outcome, Statistics};
 use gix_diff::blob::intern::TokenSource;
 use gix_diff::tree::Visit;
 use gix_hash::ObjectId;
 use gix_object::{
-    bstr::{BStr, BString},
+    bstr::{BStr, BString, ByteSlice},
     FindExt,
 };
+use gix_trace::{debug};
 use gix_traverse::commit::find as find_commit;
 use smallvec::SmallVec;
 use std::num::NonZeroU32;
@@ -66,6 +68,7 @@ pub fn file(
     suspect: ObjectId,
     cache: Option<gix_commitgraph::Graph>,
     resource_cache: &mut gix_diff::blob::Platform,
+    blame_cache: Option<&BlameCacheObject>,
     file_path: &BStr,
     range: Option<Range<u32>>,
 ) -> Result<Outcome, Error> {
@@ -95,17 +98,74 @@ pub fn file(
     }
 
     let range_in_blamed_file = one_based_inclusive_to_zero_based_exclusive_range(range, num_lines_in_blamed)?;
-    let mut hunks_to_blame = vec![UnblamedHunk {
-        range_in_blamed_file: range_in_blamed_file.clone(),
-        suspects: [(suspect, range_in_blamed_file)].into(),
-    }];
+
+    let (blame_entries, mut hunks_to_blame) = match blame_cache {
+        Some(blame_cache) => {
+            let old_file_id = find_path_entry_in_commit(
+                &odb,
+                &blame_cache.cache_id,
+                file_path.as_bstr(),
+                cache.as_ref(),
+                &mut buf,
+                &mut buf2,
+                &mut stats,
+            )
+            .expect("File shouldnt be missing").unwrap();
+            let new_file_id = find_path_entry_in_commit(
+                &odb,
+                &suspect,
+                file_path.as_bstr(),
+                cache.as_ref(),
+                &mut buf,
+                &mut buf2,
+                &mut stats,
+            )
+            .expect("File shouldnt be missing").unwrap();
+            let changes = blob_changes(
+                &odb,
+                resource_cache,
+                new_file_id,
+                old_file_id,
+                file_path.as_bstr(),
+                &mut stats,
+            )?;
+
+            if changes.iter().all(|change| matches!(change, Change::Unchanged(_))) {
+                debug!("Early return!");
+                return Ok(Outcome {
+                    entries: blame_cache.entries.clone(),
+                    blob: blamed_file_blob,
+                    statistics: stats,
+                });
+            }
+            debug!("Existing Cache {:?}: ", blame_cache.entries);
+            debug!("Changes: {:#?}", changes);
+            let (blame_entries, hunks_to_blame) = process_changes_forward(&blame_cache.entries, changes, suspect);
+            if hunks_to_blame.is_empty() {
+                debug!("Early return no hunks to blame!");
+                return Ok(Outcome {
+                    entries: blame_entries,
+                    blob: blamed_file_blob,
+                    statistics: stats,
+                });
+            }
+            (blame_entries, hunks_to_blame)
+        }
+        None => {
+            let hunks_to_blame = vec![UnblamedHunk {
+                range_in_blamed_file: range_in_blamed_file.clone(),
+                suspects: [(suspect, range_in_blamed_file)].into(),
+            }];
+            (Vec::new(), hunks_to_blame)
+        }
+    };
 
     let (mut buf, mut buf2) = (Vec::new(), Vec::new());
     let commit = find_commit(cache.as_ref(), &odb, &suspect, &mut buf)?;
     let mut queue: gix_revwalk::PriorityQueue<CommitTime, ObjectId> = gix_revwalk::PriorityQueue::new();
     queue.insert(commit_time(commit)?, suspect);
 
-    let mut out = Vec::new();
+    let mut out = blame_entries;
     let mut diff_state = gix_diff::tree::State::default();
     let mut previous_entry: Option<(ObjectId, ObjectId)> = None;
     'outer: while let Some(suspect) = queue.pop_value() {
