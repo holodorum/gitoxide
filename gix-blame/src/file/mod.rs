@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use gix_hash::ObjectId;
 
-use crate::types::{BlameEntry, Either, LineRange};
+use crate::types::{BlameEntry, Either, LineRange, LinesAssigned};
 use crate::types::{Change, Offset, UnblamedHunk};
 
 pub(super) mod function;
@@ -355,6 +355,113 @@ fn process_changes(
         }
     }
     new_hunks_to_blame
+}
+
+/// Consume `cached_blames` and `changes` to pair up matches ranges (also overlapping) with each other.
+/// Once a diff is found, it's pushed onto `new_hunks_to_blame`.
+pub fn process_changes_forward(
+    cached_blames: Vec<BlameEntry>,
+    changes: Vec<Change>,
+    head_id: ObjectId,
+) -> (Vec<BlameEntry>, Vec<UnblamedHunk>) {
+    fn blame_fully_contained_by_change(blame: &BlameEntry, change_len: &u32, lines_assigned: &LinesAssigned) -> bool {
+        let blame_len_remaining = (blame.len.get()).saturating_sub(lines_assigned.get_blame_assigned());
+        let change_len_remaining = change_len.saturating_sub(lines_assigned.get_change_assigned());
+        blame_len_remaining < change_len_remaining
+    }
+
+    let mut updated_blames = Vec::new();
+    let mut new_hunks_to_blame = Vec::new();
+    let mut blame_iter = cached_blames.into_iter().peekable();
+
+    let mut lines_assigned = LinesAssigned::default();
+    'change: for change in changes {
+        lines_assigned.reset_change_assigned();
+
+        'blame: while let Some(mut blame) = blame_iter.peek().cloned() {
+            blame.update_blame(&lines_assigned);
+            match change.clone() {
+                Change::Unchanged(mut range) => {
+                    range.start += lines_assigned.get_change_assigned();
+                    match blame_fully_contained_by_change(&blame, &range.len().try_into().unwrap(), &lines_assigned) {
+                        true => {
+                            // Full blame assigned
+                            updated_blames.push(BlameEntry {
+                                start_in_blamed_file: range.start,
+                                start_in_source_file: blame.start_in_source_file,
+                                len: blame.len,
+                                commit_id: blame.commit_id,
+                            });
+
+                            // Full Blame Is Assigned
+                            lines_assigned.add_change_assigned(blame.len.get());
+                            lines_assigned.reset_blame_assigned();
+                            blame_iter.next();
+                            continue 'blame;
+                        }
+                        false => {
+                            // Full change assigned
+                            updated_blames.push(BlameEntry {
+                                start_in_blamed_file: range.start,
+                                start_in_source_file: blame.start_in_source_file,
+                                len: NonZeroU32::new(range.len().try_into().unwrap()).unwrap(),
+                                commit_id: blame.commit_id,
+                            });
+
+                            lines_assigned.add_blame_assigned(range.len().try_into().unwrap());
+
+                            continue 'change;
+                        }
+                    }
+                }
+                Change::Deleted(_start_deletion, lines_deleted) => {
+                    match blame_fully_contained_by_change(&blame, &lines_deleted, &lines_assigned) {
+                        true => {
+                            // Full Blame Is Assigned
+                            lines_assigned.add_change_assigned(blame.len.get());
+                            lines_assigned.reset_blame_assigned();
+                            blame_iter.next();
+                            continue 'blame;
+                        }
+                        false => {
+                            // Full Change Is Assigned
+                            lines_assigned.add_blame_assigned(lines_deleted - lines_assigned.get_change_assigned());
+                            continue 'change;
+                        }
+                    }
+                }
+                Change::AddedOrReplaced(range, lines_deleted) => {
+                    new_hunks_to_blame.push(UnblamedHunk {
+                        range_in_blamed_file: range.clone(),
+                        suspects: [(head_id, range)].into(),
+                    });
+                    let mut add_replace_blame = blame;
+                    loop {
+                        match blame_fully_contained_by_change(&add_replace_blame, &lines_deleted, &lines_assigned) {
+                            true => {
+                                // Full Blame Is Assigned
+                                lines_assigned.add_change_assigned(add_replace_blame.len.get());
+                                lines_assigned.reset_blame_assigned();
+                                blame_iter.next();
+                                add_replace_blame = if let Some(mut blame) = blame_iter.peek().cloned() {
+                                    blame.update_blame(&lines_assigned);
+                                    blame
+                                } else {
+                                    continue 'change;
+                                }
+                            }
+                            false => {
+                                // Full Change Is Assigned
+                                lines_assigned.add_blame_assigned(lines_deleted - lines_assigned.get_change_assigned());
+                                continue 'change;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (updated_blames, new_hunks_to_blame)
 }
 
 impl UnblamedHunk {

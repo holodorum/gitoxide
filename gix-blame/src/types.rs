@@ -170,6 +170,15 @@ impl BlameEntry {
     }
 }
 
+impl BlameEntry {
+    /// Update the `start_in_blamed_file` and `start_in_source_file` fields by the lines that are already assigned.
+    pub(crate) fn update_blame(&mut self, offset: &LinesAssigned) {
+        self.start_in_blamed_file += offset.get_blame_assigned();
+        self.start_in_source_file += offset.get_blame_assigned();
+        self.len = NonZeroU32::new(u32::from(self.len) - offset.get_blame_assigned()).unwrap();
+    }
+}
+
 pub(crate) trait LineRange {
     fn shift_by(&self, offset: Offset) -> Self;
 }
@@ -196,7 +205,7 @@ pub(crate) enum Either<T, U> {
 }
 
 /// A single change between two blobs, or an unchanged region.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Change {
     /// A range of tokens that wasn't changed.
     Unchanged(Range<u32>),
@@ -204,4 +213,31 @@ pub enum Change {
     AddedOrReplaced(Range<u32>, u32),
     /// `(line_to_start_deletion_at, num_deleted_in_before)`
     Deleted(u32, u32),
+}
+
+#[derive(Default)]
+pub(crate) struct LinesAssigned {
+    blame: u32,
+    change: u32,
+}
+
+impl LinesAssigned {
+    pub(crate) fn reset_change_assigned(&mut self) {
+        self.change = 0;
+    }
+    pub(crate) fn reset_blame_assigned(&mut self) {
+        self.blame = 0;
+    }
+    pub(crate) fn add_blame_assigned(&mut self, lines: u32) {
+        self.blame += lines;
+    }
+    pub(crate) fn add_change_assigned(&mut self, lines: u32) {
+        self.change += lines;
+    }
+    pub(crate) fn get_blame_assigned(&self) -> u32 {
+        self.blame
+    }
+    pub(crate) fn get_change_assigned(&self) -> u32 {
+        self.change
+    }
 }

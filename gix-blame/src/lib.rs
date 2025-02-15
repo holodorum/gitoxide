@@ -21,3 +21,4 @@ pub use types::{BlameEntry, Outcome, Statistics};
 
 mod file;
 pub use file::function::{blob_changes, file, find_path_entry_in_commit, tree_diff_at_file_path};
+pub use file::process_changes_forward;
