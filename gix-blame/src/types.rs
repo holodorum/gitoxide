@@ -190,7 +190,7 @@ impl LineRange for Range<u32> {
 }
 
 /// Tracks the hunks in the *Blamed File* that are not yet associated with the commit that introduced them.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct UnblamedHunk {
     /// The range in the file that is being blamed that this hunk represents.
     pub range_in_blamed_file: Range<u32>,

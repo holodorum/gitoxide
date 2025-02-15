@@ -73,19 +73,7 @@ pub fn file(
 
     let mut stats = Statistics::default();
     let (mut buf, mut buf2, mut buf3) = (Vec::new(), Vec::new(), Vec::new());
-    let blamed_file_entry_id = find_path_entry_in_commit(
-        &odb,
-        &suspect,
-        file_path,
-        cache.as_ref(),
-        &mut buf,
-        &mut buf2,
-        &mut stats,
-    )?
-    .ok_or_else(|| Error::FileMissing {
-        file_path: file_path.to_owned(),
-        commit_id: suspect,
-    })?;
+    let blamed_file_entry_id = find_blamed_file_entry(&odb, &suspect, file_path, cache.as_ref(), &mut buf, &mut buf2, &mut stats)?;
     let blamed_file_blob = odb.find_blob(&blamed_file_entry_id, &mut buf)?.data.to_vec();
     let num_lines_in_blamed = tokens_for_diffing(&blamed_file_blob).tokenize().count() as u32;
 
@@ -95,34 +83,105 @@ pub fn file(
     }
 
     let range_in_blamed_file = one_based_inclusive_to_zero_based_exclusive_range(range, num_lines_in_blamed)?;
-    let mut hunks_to_blame = vec![UnblamedHunk {
-        range_in_blamed_file: range_in_blamed_file.clone(),
-        suspects: [(suspect, range_in_blamed_file)].into(),
-    }];
+    let mut hunks_to_blame = initialize_hunks_to_blame(suspect, range_in_blamed_file);
 
     let (mut buf, mut buf2) = (Vec::new(), Vec::new());
     let commit = find_commit(cache.as_ref(), &odb, &suspect, &mut buf)?;
-    let mut queue: gix_revwalk::PriorityQueue<CommitTime, ObjectId> = gix_revwalk::PriorityQueue::new();
-    queue.insert(commit_time(commit)?, suspect);
+    let mut queue = initialize_queue(commit, suspect)?;
 
     let mut out = Vec::new();
     let mut diff_state = gix_diff::tree::State::default();
-    let mut previous_entry: Option<(ObjectId, ObjectId)> = None;
-    'outer: while let Some(suspect) = queue.pop_value() {
+    let previous_entry: Option<(ObjectId, ObjectId)> = None;
+
+    process_queue(
+        &mut queue,
+        &mut hunks_to_blame,
+        &mut out,
+        &mut stats,
+        &mut diff_state,
+        previous_entry,
+        &odb,
+        cache.as_ref(),
+        &blamed_file_blob,
+        file_path,
+        &mut buf,
+        &mut buf2,
+        &mut buf3,
+        resource_cache,
+    )?;
+
+    // I don’t know yet whether it would make sense to use a data structure instead that preserves
+    // order on insertion
+    out.sort_by(|a, b| a.start_in_blamed_file.cmp(&b.start_in_blamed_file));
+    Ok(Outcome {
+        entries: coalesce_blame_entries(out),
+        blob: blamed_file_blob,
+        statistics: stats,
+    })
+}
+
+fn find_blamed_file_entry(
+    odb: &(impl gix_object::Find + gix_object::FindHeader),
+    suspect: &ObjectId,
+    file_path: &BStr,
+    cache: Option<&gix_commitgraph::Graph>,
+    buf: &mut Vec<u8>,
+    buf2: &mut Vec<u8>,
+    stats: &mut Statistics,
+) -> Result<ObjectId, Error> {
+    find_path_entry_in_commit(odb, suspect, file_path, cache, buf, buf2, stats)?.ok_or_else(|| Error::FileMissing {
+        file_path: file_path.to_owned(),
+        commit_id: *suspect,
+    })
+}
+
+fn initialize_hunks_to_blame(suspect: ObjectId, range_in_blamed_file: Range<u32>) -> Vec<UnblamedHunk> {
+    vec![UnblamedHunk {
+        range_in_blamed_file: range_in_blamed_file.clone(),
+        suspects: [(suspect, range_in_blamed_file)].into(),
+    }]
+}
+
+fn initialize_queue(
+    commit: gix_traverse::commit::Either<'_, '_>,
+    suspect: ObjectId,
+) -> Result<gix_revwalk::PriorityQueue<CommitTime, ObjectId>, Error> {
+    let mut queue = gix_revwalk::PriorityQueue::new();
+    queue.insert(commit_time(commit)?, suspect);
+    Ok(queue)
+}
+
+fn process_queue(
+    queue: &mut gix_revwalk::PriorityQueue<CommitTime, ObjectId>,
+    hunks_to_blame: &mut Vec<UnblamedHunk>,
+    out: &mut Vec<BlameEntry>,
+    stats: &mut Statistics,
+    diff_state: &mut gix_diff::tree::State,
+    mut previous_entry: Option<(ObjectId, ObjectId)>,
+    odb: &(impl gix_object::Find + gix_object::FindHeader),
+    cache: Option<&gix_commitgraph::Graph>,
+    blamed_file_blob: &[u8],
+    file_path: &BStr,
+    buf: &mut Vec<u8>,
+    buf2: &mut Vec<u8>,
+    buf3: &mut Vec<u8>,
+    resource_cache: &mut gix_diff::blob::Platform,
+) -> Result<(), Error> {
+    while let Some(suspect) = queue.pop_value() {
         stats.commits_traversed += 1;
         if hunks_to_blame.is_empty() {
             break;
         }
 
-        let is_still_suspect = hunks_to_blame.iter().any(|hunk| hunk.suspects.contains_key(&suspect));
-        if !is_still_suspect {
-            // There are no `UnblamedHunk`s associated with this `suspect`, so we can continue with
-            // the next one.
-            continue 'outer;
+        // There are no `UnblamedHunk`s associated with this `suspect`, so we can continue with
+        // the next one.
+        if !is_still_suspect(hunks_to_blame, &suspect) {
+            continue;
         }
 
-        let commit = find_commit(cache.as_ref(), &odb, &suspect, &mut buf)?;
-        let parent_ids: ParentIds = collect_parents(commit, &odb, cache.as_ref(), &mut buf2)?;
+        let commit = find_commit(cache, odb, &suspect, buf)?;
+        let parent_ids = collect_parents(commit, odb, cache, buf2)?;
+
         if parent_ids.is_empty() {
             if queue.is_empty() {
                 // I’m not entirely sure if this is correct yet. `suspect`, at this point, is the
@@ -130,198 +189,232 @@ pub fn file(
                 // the remaining lines to it, even though we don’t explicitly check whether that is
                 // true here. We could perhaps use diff-tree-to-tree to compare `suspect` against
                 // an empty tree to validate this assumption.
-                if unblamed_to_out_is_done(&mut hunks_to_blame, &mut out, suspect) {
-                    break 'outer;
+                if unblamed_to_out_is_done(hunks_to_blame, out, suspect) {
+                    return Ok(()); // We’re done.
                 }
             }
             // There is more, keep looking.
             continue;
         }
 
-        let mut entry = previous_entry
-            .take()
-            .filter(|(id, _)| *id == suspect)
-            .map(|(_, entry)| entry);
+        let entry = find_entry(&mut previous_entry, odb, &suspect, file_path, cache, buf, buf2, stats)?;
         if entry.is_none() {
-            entry = find_path_entry_in_commit(
-                &odb,
-                &suspect,
-                file_path,
-                cache.as_ref(),
-                &mut buf,
-                &mut buf2,
-                &mut stats,
-            )?;
-        }
-
-        let Some(entry_id) = entry else {
             continue;
-        };
+        }
 
-        // This block asserts that, for every `UnblamedHunk`, all lines in the *Blamed File* are
-        // identical to the corresponding lines in the *Source File*.
         #[cfg(debug_assertions)]
-        {
-            let source_blob = odb.find_blob(&entry_id, &mut buf)?.data.to_vec();
-            let mut source_interner = gix_diff::blob::intern::Interner::new(source_blob.len() / 100);
-            let source_lines_as_tokens: Vec<_> = tokens_for_diffing(&source_blob)
-                .tokenize()
-                .map(|token| source_interner.intern(token))
-                .collect();
+        assert_blamed_file_consistency(odb, suspect, &entry.unwrap(), blamed_file_blob, hunks_to_blame, buf)?;
 
-            let mut blamed_interner = gix_diff::blob::intern::Interner::new(blamed_file_blob.len() / 100);
-            let blamed_lines_as_tokens: Vec<_> = tokens_for_diffing(&blamed_file_blob)
-                .tokenize()
-                .map(|token| blamed_interner.intern(token))
-                .collect();
+        process_parents(
+            &parent_ids,
+            &mut previous_entry,
+            &entry.unwrap(),
+            &suspect,
+            hunks_to_blame,
+            queue,
+            odb,
+            file_path,
+            cache,
+            stats,
+            diff_state,
+            buf,
+            buf2,
+            buf3,
+            out,
+            resource_cache,
+        )?;
 
-            for hunk in hunks_to_blame.iter() {
-                if let Some(range_in_suspect) = hunk.suspects.get(&suspect) {
-                    let range_in_blamed_file = hunk.range_in_blamed_file.clone();
+        finalize_hunks_to_blame(hunks_to_blame, out, suspect);
 
-                    for (blamed_line_number, source_line_number) in range_in_blamed_file.zip(range_in_suspect.clone()) {
-                        let source_token = source_lines_as_tokens[source_line_number as usize];
-                        let blame_token = blamed_lines_as_tokens[blamed_line_number as usize];
-
-                        let source_line = BString::new(source_interner[source_token].into());
-                        let blamed_line = BString::new(blamed_interner[blame_token].into());
-
-                        assert_eq!(source_line, blamed_line);
-                    }
-                }
-            }
-        }
-
-        // Itereer over de parent ids, als de file is aangepast in een van de parent id's dan passeren we de blame als de entry hetzelfde is?!
-        // TODO begrijp wat hier gebeurt.
-        for (pid, (parent_id, parent_commit_time)) in parent_ids.iter().enumerate() {
-            if let Some(parent_entry_id) = find_path_entry_in_commit(
-                &odb,
-                parent_id,
-                file_path,
-                cache.as_ref(),
-                &mut buf,
-                &mut buf2,
-                &mut stats,
-            )? {
-                let no_change_in_entry = entry_id == parent_entry_id;
-                if pid == 0 {
-                    previous_entry = Some((*parent_id, parent_entry_id));
-                }
-                if no_change_in_entry {
-                    pass_blame_from_to(suspect, *parent_id, &mut hunks_to_blame);
-                    queue.insert(*parent_commit_time, *parent_id);
-                    continue 'outer;
-                }
-            }
-        }
-
-        let more_than_one_parent = parent_ids.len() > 1;
-        for (parent_id, parent_commit_time) in parent_ids {
-            queue.insert(parent_commit_time, parent_id);
-            // TODO verschil tree_diff_at_file_path en blob_change?
-            let changes_for_file_path = tree_diff_at_file_path(
-                &odb,
-                file_path,
-                suspect,
-                parent_id,
-                cache.as_ref(),
-                &mut stats,
-                &mut diff_state,
-                &mut buf,
-                &mut buf2,
-                &mut buf3,
-            )?;
-            let Some(modification) = changes_for_file_path else {
-                if more_than_one_parent {
-                    // None of the changes affected the file we’re currently blaming.
-                    // Copy blame to parent.
-                    for unblamed_hunk in &mut hunks_to_blame {
-                        unblamed_hunk.clone_blame(suspect, parent_id);
-                    }
-                } else {
-                    pass_blame_from_to(suspect, parent_id, &mut hunks_to_blame);
-                }
-                continue;
-            };
-
-            match modification {
-                gix_diff::tree::recorder::Change::Addition { .. } => {
-                    if more_than_one_parent {
-                        // Do nothing under the assumption that this always (or almost always)
-                        // implies that the file comes from a different parent, compared to which
-                        // it was modified, not added.
-                    } else if unblamed_to_out_is_done(&mut hunks_to_blame, &mut out, suspect) {
-                        break 'outer;
-                    }
-                }
-                gix_diff::tree::recorder::Change::Deletion { .. } => {
-                    unreachable!("We already found file_path in suspect^{{tree}}, so it can't be deleted")
-                }
-                gix_diff::tree::recorder::Change::Modification { previous_oid, oid, .. } => {
-                    let changes = blob_changes(&odb, resource_cache, oid, previous_oid, file_path, &mut stats)?;
-                    hunks_to_blame = process_changes(hunks_to_blame, changes, suspect, parent_id);
-                }
-            }
-        }
-
-        hunks_to_blame.retain_mut(|unblamed_hunk| {
-            if unblamed_hunk.suspects.len() == 1 {
-                if let Some(entry) = BlameEntry::from_unblamed_hunk(unblamed_hunk, suspect) {
-                    // At this point, we have copied blame for every hunk to a parent. Hunks
-                    // that have only `suspect` left in `suspects` have not passed blame to any
-                    // parent, and so they can be converted to a `BlameEntry` and moved to
-                    // `out`.
-                    out.push(entry);
-                    return false;
-                }
-            }
-            unblamed_hunk.remove_blame(suspect);
-            true
-        });
-
-        // This block asserts that line ranges for each suspect never overlap. If they did overlap
-        // this would mean that the same line in a *Source File* would map to more than one line in
-        // the *Blamed File* and this is not possible.
         #[cfg(debug_assertions)]
-        {
-            let ranges = hunks_to_blame.iter().fold(
-                std::collections::BTreeMap::<ObjectId, Vec<Range<u32>>>::new(),
-                |mut acc, hunk| {
-                    for (suspect, range) in hunk.suspects.clone() {
-                        acc.entry(suspect).or_default().push(range);
-                    }
+        assert_no_overlapping_ranges(hunks_to_blame);
+    }
 
-                    acc
-                },
-            );
+    Ok(())
+}
 
-            for (_, mut ranges) in ranges {
-                ranges.sort_by(|a, b| a.start.cmp(&b.start));
+fn is_still_suspect(hunks_to_blame: &[UnblamedHunk], suspect: &ObjectId) -> bool {
+    hunks_to_blame.iter().any(|hunk| hunk.suspects.contains_key(suspect))
+}
 
-                for window in ranges.windows(2) {
-                    if let [a, b] = window {
-                        assert!(a.end <= b.start, "#{hunks_to_blame:#?}");
-                    }
-                }
+fn find_entry(
+    previous_entry: &mut Option<(ObjectId, ObjectId)>,
+    odb: &(impl gix_object::Find + gix_object::FindHeader),
+    suspect: &ObjectId,
+    file_path: &BStr,
+    cache: Option<&gix_commitgraph::Graph>,
+    buf: &mut Vec<u8>,
+    buf2: &mut Vec<u8>,
+    stats: &mut Statistics,
+) -> Result<Option<ObjectId>, Error> {
+    let entry = previous_entry
+        .take()
+        .filter(|(id, _)| *id == *suspect)
+        .map(|(_, entry)| entry);
+    if entry.is_none() {
+        find_path_entry_in_commit(odb, suspect, file_path, cache, buf, buf2, stats)
+    } else {
+        Ok(entry)
+    }
+}
+
+fn assert_blamed_file_consistency(
+    odb: &(impl gix_object::Find + gix_object::FindHeader),
+    suspect: ObjectId,
+    entry_id: &ObjectId,
+    blamed_file_blob: &[u8],
+    hunks_to_blame: &[UnblamedHunk],
+    buf: &mut Vec<u8>,
+) -> Result<(), Error> {
+    // This block asserts that, for every `UnblamedHunk`, all lines in the *Blamed File* are
+    // identical to the corresponding lines in the *Source File*.
+    let source_blob = odb.find_blob(entry_id, buf)?.data.to_vec();
+    let mut source_interner = gix_diff::blob::intern::Interner::new(source_blob.len() / 100);
+    let source_lines_as_tokens: Vec<_> = tokens_for_diffing(&source_blob)
+        .tokenize()
+        .map(|token| source_interner.intern(token))
+        .collect();
+
+    let mut blamed_interner = gix_diff::blob::intern::Interner::new(blamed_file_blob.len() / 100);
+    let blamed_lines_as_tokens: Vec<_> = tokens_for_diffing(blamed_file_blob)
+        .tokenize()
+        .map(|token| blamed_interner.intern(token))
+        .collect();
+
+    for hunk in hunks_to_blame.iter() {
+        if let Some(range_in_suspect) = hunk.suspects.get(&suspect) {
+            let range_in_blamed_file = hunk.range_in_blamed_file.clone();
+
+            for (blamed_line_number, source_line_number) in range_in_blamed_file.zip(range_in_suspect.clone()) {
+                let source_token = source_lines_as_tokens[source_line_number as usize];
+                let blame_token = blamed_lines_as_tokens[blamed_line_number as usize];
+
+                let source_line = BString::new(source_interner[source_token].into());
+                let blamed_line = BString::new(blamed_interner[blame_token].into());
+
+                assert_eq!(source_line, blamed_line);
             }
         }
     }
 
-    debug_assert_eq!(
-        hunks_to_blame,
-        vec![],
-        "only if there is no portion of the file left we have completed the blame"
+    Ok(())
+}
+
+fn process_parents(
+    parent_ids: &[(ObjectId, CommitTime)],
+    previous_entry: &mut Option<(ObjectId, ObjectId)>,
+    entry_id: &ObjectId,
+    suspect: &ObjectId,
+    hunks_to_blame: &mut Vec<UnblamedHunk>,
+    queue: &mut gix_revwalk::PriorityQueue<CommitTime, ObjectId>,
+    odb: &(impl gix_object::Find + gix_object::FindHeader),
+    file_path: &BStr,
+    cache: Option<&gix_commitgraph::Graph>,
+    stats: &mut Statistics,
+    diff_state: &mut gix_diff::tree::State,
+    buf: &mut Vec<u8>,
+    buf2: &mut Vec<u8>,
+    buf3: &mut Vec<u8>,
+    out: &mut Vec<BlameEntry>,
+    resource_cache: &mut gix_diff::blob::Platform,
+) -> Result<(), Error> {
+    for (pid, (parent_id, parent_commit_time)) in parent_ids.iter().enumerate() {
+        if let Some(parent_entry_id) = find_path_entry_in_commit(odb, parent_id, file_path, cache, buf, buf2, stats)? {
+            let no_change_in_entry = entry_id == &parent_entry_id;
+            if pid == 0 {
+                *previous_entry = Some((*parent_id, parent_entry_id));
+            }
+            if no_change_in_entry {
+                pass_blame_from_to(*suspect, *parent_id, hunks_to_blame);
+                queue.insert(*parent_commit_time, *parent_id);
+                return Ok(());
+            }
+        }
+    }
+
+    let more_than_one_parent = parent_ids.len() > 1;
+    for (parent_id, parent_commit_time) in parent_ids {
+        queue.insert(*parent_commit_time, *parent_id);
+        let changes_for_file_path = tree_diff_at_file_path(
+            odb, file_path, *suspect, *parent_id, cache, stats, diff_state, buf, buf2, buf3,
+        )?;
+        let Some(modification) = changes_for_file_path else {
+            if more_than_one_parent {
+                // None of the changes affected the file we’re currently blaming.
+                // Copy blame to parent.
+                for unblamed_hunk in &mut *hunks_to_blame {
+                    unblamed_hunk.clone_blame(*suspect, *parent_id);
+                }
+            } else {
+                pass_blame_from_to(*suspect, *parent_id, hunks_to_blame);
+            }
+            continue;
+        };
+
+        match modification {
+            gix_diff::tree::recorder::Change::Addition { .. } => {
+                if more_than_one_parent {
+                    // Do nothing under the assumption that this always (or almost always)
+                    // implies that the file comes from a different parent, compared to which
+                    // it was modified, not added.
+                } else if unblamed_to_out_is_done(hunks_to_blame, out, *suspect) {
+                    return Ok(());
+                }
+            }
+            gix_diff::tree::recorder::Change::Deletion { .. } => {
+                unreachable!("We already found file_path in suspect^{{tree}}, so it can't be deleted")
+            }
+            gix_diff::tree::recorder::Change::Modification { previous_oid, oid, .. } => {
+                let changes = blob_changes(odb, resource_cache, oid, previous_oid, file_path, stats)?;
+                *hunks_to_blame = process_changes(hunks_to_blame.clone(), changes, *suspect, *parent_id);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn finalize_hunks_to_blame(hunks_to_blame: &mut Vec<UnblamedHunk>, out: &mut Vec<BlameEntry>, suspect: ObjectId) {
+    hunks_to_blame.retain_mut(|unblamed_hunk| {
+        if unblamed_hunk.suspects.len() == 1 {
+            if let Some(entry) = BlameEntry::from_unblamed_hunk(unblamed_hunk, suspect) {
+                // At this point, we have copied blame for every hunk to a parent. Hunks
+                // that have only `suspect` left in `suspects` have not passed blame to any
+                // parent, and so they can be converted to a `BlameEntry` and moved to
+                // `out`.
+                out.push(entry);
+                return false;
+            }
+        }
+        unblamed_hunk.remove_blame(suspect);
+        true
+    });
+}
+
+fn assert_no_overlapping_ranges(hunks_to_blame: &[UnblamedHunk]) {
+    // This block asserts that line ranges for each suspect never overlap. If they did overlap
+    // this would mean that the same line in a *Source File* would map to more than one line in
+    // the *Blamed File* and this is not possible.
+    let ranges = hunks_to_blame.iter().fold(
+        std::collections::BTreeMap::<ObjectId, Vec<Range<u32>>>::new(),
+        |mut acc, hunk| {
+            for (suspect, range) in hunk.suspects.clone() {
+                acc.entry(suspect).or_default().push(range);
+            }
+
+            acc
+        },
     );
 
-    // I don’t know yet whether it would make sense to use a data structure instead that preserves
-    // order on insertion.
-    out.sort_by(|a, b| a.start_in_blamed_file.cmp(&b.start_in_blamed_file));
-    Ok(Outcome {
-        entries: coalesce_blame_entries(out),
-        blob: blamed_file_blob,
-        statistics: stats,
-    })
+    for (_, mut ranges) in ranges {
+        ranges.sort_by(|a, b| a.start.cmp(&b.start));
+
+        for window in ranges.windows(2) {
+            if let [a, b] = window {
+                assert!(a.end <= b.start, "#{hunks_to_blame:#?}");
+            }
+        }
+    }
 }
 
 /// This function assumes that `range` has 1-based inclusive line numbers and converts it to the
