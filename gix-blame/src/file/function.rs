@@ -1,11 +1,12 @@
-use super::{process_changes, Change, UnblamedHunk};
+use super::{process_changes, process_changes_forward, Change, UnblamedHunk};
+use crate::types::BlameCache;
 use crate::{BlameEntry, Error, Outcome, Statistics};
-use gix_diff::blob::intern::TokenSource;
+use gix_diff::blob::{self, intern::TokenSource};
 use gix_diff::tree::Visit;
 use gix_hash::ObjectId;
 use gix_object::{
-    bstr::{BStr, BString},
-    FindExt,
+    bstr::{BStr, BString, ByteSlice},
+    tree, FindExt,
 };
 use gix_traverse::commit::find as find_commit;
 use smallvec::SmallVec;
@@ -66,6 +67,7 @@ pub fn file(
     suspect: ObjectId,
     cache: Option<gix_commitgraph::Graph>,
     resource_cache: &mut gix_diff::blob::Platform,
+    blame_cache: Option<BlameCache>,
     file_path: &BStr,
     range: Option<Range<u32>>,
 ) -> Result<Outcome, Error> {
@@ -73,7 +75,15 @@ pub fn file(
 
     let mut stats = Statistics::default();
     let (mut buf, mut buf2, mut buf3) = (Vec::new(), Vec::new(), Vec::new());
-    let blamed_file_entry_id = find_blamed_file_entry(&odb, &suspect, file_path, cache.as_ref(), &mut buf, &mut buf2, &mut stats)?;
+    let blamed_file_entry_id = find_blamed_file_entry(
+        &odb,
+        &suspect,
+        file_path,
+        cache.as_ref(),
+        &mut buf,
+        &mut buf2,
+        &mut stats,
+    )?;
     let blamed_file_blob = odb.find_blob(&blamed_file_entry_id, &mut buf)?.data.to_vec();
     let num_lines_in_blamed = tokens_for_diffing(&blamed_file_blob).tokenize().count() as u32;
 
@@ -83,13 +93,33 @@ pub fn file(
     }
 
     let range_in_blamed_file = one_based_inclusive_to_zero_based_exclusive_range(range, num_lines_in_blamed)?;
-    let mut hunks_to_blame = initialize_hunks_to_blame(suspect, range_in_blamed_file);
+
+    let (blame_entries, mut hunks_to_blame) = match blame_cache {
+        Some(blame_cache) => {
+            let changes = find_diff_cache(
+                &odb,
+                &blame_cache.cache_id,
+                &suspect,
+                file_path,
+                cache.as_ref(),
+                resource_cache,
+                &mut buf,
+                &mut buf2,
+                &mut stats,
+            )?;
+            process_changes_forward(blame_cache.entries, changes, suspect)
+        }
+        None => {
+            let hunks_to_blame = initialize_hunks_to_blame(suspect, range_in_blamed_file);
+            (Vec::new(), hunks_to_blame)
+        }
+    };
 
     let (mut buf, mut buf2) = (Vec::new(), Vec::new());
     let commit = find_commit(cache.as_ref(), &odb, &suspect, &mut buf)?;
     let mut queue = initialize_queue(commit, suspect)?;
 
-    let mut out = Vec::new();
+    let mut out = blame_entries;
     let mut diff_state = gix_diff::tree::State::default();
     let previous_entry: Option<(ObjectId, ObjectId)> = None;
 
@@ -118,6 +148,47 @@ pub fn file(
         blob: blamed_file_blob,
         statistics: stats,
     })
+}
+
+fn find_diff_cache(
+    odb: &(impl gix_object::Find + gix_object::FindHeader),
+    cache_id: &ObjectId,
+    suspect: &ObjectId,
+    file_path: &BStr,
+    cache: Option<&gix_commitgraph::Graph>,
+    resource_cache: &mut gix_diff::blob::Platform,
+    buf: &mut Vec<u8>,
+    buf2: &mut Vec<u8>,
+    stats: &mut Statistics,
+) -> Result<Vec<Change>, Error> {
+    let old_file_id = find_path_entry_in_commit(&odb, cache_id, file_path.as_bstr(), cache, buf, buf2, stats)?
+        .expect("File shouldnt be missing");
+    let new_file_id = find_path_entry_in_commit(&odb, suspect, file_path.as_bstr(), cache, buf, buf2, stats)?
+        .expect("File shouldnt be missing");
+    resource_cache.set_resource(
+        old_file_id,
+        tree::EntryKind::Blob,
+        file_path.as_bstr(),
+        blob::ResourceKind::OldOrSource,
+        &odb,
+    )?;
+    resource_cache.set_resource(
+        new_file_id,
+        tree::EntryKind::Blob,
+        file_path.as_bstr(),
+        blob::ResourceKind::OldOrSource,
+        &odb,
+    )?;
+    resource_cache.prepare_diff()?;
+    let changes = blob_changes(
+        odb,
+        resource_cache,
+        new_file_id,
+        old_file_id,
+        file_path.as_bstr(),
+        stats,
+    )?;
+    Ok(changes)
 }
 
 fn find_blamed_file_entry(

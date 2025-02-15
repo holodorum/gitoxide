@@ -117,6 +117,14 @@ impl SubAssign<u32> for Offset {
     }
 }
 
+/// A cache of blame entries that can be used to speed up subsequent blames.
+pub struct BlameCache {
+    /// The entries of the cache.
+    pub entries: Vec<BlameEntry>,
+    /// The commit that was blamed to produce these entries.
+    pub cache_id: ObjectId,
+}
+
 /// A mapping of a section of the *Blamed File* to the section in a *Source File* that introduced it.
 ///
 /// Both ranges are of the same size, but may use different [starting points](Range::start). Naturally,
