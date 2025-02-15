@@ -4,8 +4,9 @@ use std::num::NonZeroU32;
 use std::ops::Range;
 
 use gix_hash::ObjectId;
+use gix_trace::debug;
 
-use crate::types::{BlameEntry, Either, LineRange, LinesAssigned};
+use crate::types::{BlameEntry, BlameLines, ChangeLines, Either, LineRange, LinesAssignedTrait};
 use crate::types::{Change, Offset, UnblamedHunk};
 
 pub(super) mod function;
@@ -364,31 +365,31 @@ pub fn process_changes_forward(
     changes: Vec<Change>,
     head_id: ObjectId,
 ) -> (Vec<BlameEntry>, Vec<UnblamedHunk>) {
-    fn blame_fully_contained_by_change(blame: &BlameEntry, change_len: &u32, lines_assigned: &LinesAssigned) -> bool {
-        let blame_len_remaining = (blame.len.get()).saturating_sub(lines_assigned.get_blame_assigned());
-        let change_len_remaining = change_len.saturating_sub(lines_assigned.get_change_assigned());
-        blame_len_remaining < change_len_remaining
+    fn blame_fully_contained_by_change(blame: &BlameLines, change: &ChangeLines) -> bool {
+        blame.get_remaining() < change.get_remaining()
     }
 
     let mut updated_blames = Vec::new();
     let mut new_hunks_to_blame = Vec::new();
     let mut blame_iter = cached_blames.into_iter().peekable();
 
-    let mut lines_assigned = LinesAssigned::default();
+    let mut blame_assigned = BlameLines::new(None);
     'change: for change in changes {
-        lines_assigned.reset_change_assigned();
+        let mut change_assigned = ChangeLines::new(Some(change.clone()));
 
         'blame: while let Some(mut blame) = blame_iter.peek().cloned() {
             debug!("Lines of Change Assigned: {:?}", change_assigned);
             debug!("Lines of Blame Assigned: {:?}", blame_assigned);
             debug!("Blame: {:?}", blame);
-            blame.update_blame(&lines_assigned);
+            blame.update_blame(&blame_assigned);
+            blame_assigned.add_blame(Some(blame.clone()));
             match change.clone() {
                 Change::Unchanged(mut range) => {
                     debug!("Handling Unchanged: {:?}", range);
-                    range.start += lines_assigned.get_change_assigned();
-                    match blame_fully_contained_by_change(&blame, &range.len().try_into().unwrap(), &lines_assigned) {
+                    range.start += change_assigned.get_assigned();
+                    match blame_fully_contained_by_change(&blame_assigned, &change_assigned) {
                         true => {
+                            debug!("Blame fully contained by change");
                             // Full blame assigned
                             updated_blames.push(BlameEntry {
                                 start_in_blamed_file: range.start,
@@ -398,8 +399,10 @@ pub fn process_changes_forward(
                             });
 
                             // Full Blame Is Assigned
-                            lines_assigned.add_change_assigned(blame.len.get());
-                            lines_assigned.reset_blame_assigned();
+                            change_assigned.add_assigned(blame.len.get());
+
+                            // TODO - check if we can do this at beginning of loop
+                            blame_assigned.reset_assigned();
                             blame_iter.next();
                             continue 'blame;
                         }
@@ -414,8 +417,12 @@ pub fn process_changes_forward(
                                 commit_id: blame.commit_id,
                             });
 
+                            if blame_assigned.add_assigned(change_assigned.get_remaining()) {
                                 debug!("Blame and change are fully contained");
-                            lines_assigned.add_blame_assigned(range.len().try_into().unwrap());
+                                blame_assigned.reset_assigned();
+                                blame_iter.next();
+                                // unreachable!("This should not happen since it is caught by the first match?!");
+                            }
 
                             continue 'change;
                         }
@@ -423,17 +430,22 @@ pub fn process_changes_forward(
                 }
                 Change::Deleted(_start_deletion, lines_deleted) => {
                     debug!("Handling Deleted: {:?}", lines_deleted);
-                    match blame_fully_contained_by_change(&blame, &lines_deleted, &lines_assigned) {
+                    match blame_fully_contained_by_change(&blame_assigned, &change_assigned) {
                         true => {
-                            // Full Blame Is Assigned
-                            lines_assigned.add_change_assigned(blame.len.get());
-                            lines_assigned.reset_blame_assigned();
+                            debug!("Blame fully contained by change");
+                            change_assigned.add_assigned(blame.len.get());
+                            blame_assigned.reset_assigned();
                             blame_iter.next();
                             continue 'blame;
                         }
                         false => {
                             debug!("Change fully contained by blame");
                             if blame_assigned.add_assigned(change_assigned.get_remaining()) {
+                                debug!("Blame and change are fully contained");
+                                blame_assigned.reset_assigned();
+                                blame_iter.next();
+                                // unreachable!("This should not happen since it is caught by the first match?!");
+                            }
                             continue 'change;
                         }
                     }
@@ -450,12 +462,13 @@ pub fn process_changes_forward(
                         match blame_fully_contained_by_change(&blame_assigned, &change_assigned) {
                             true => {
                                 // Full Blame Is Assigned
-                                lines_assigned.add_change_assigned(add_replace_blame.len.get());
-                                lines_assigned.reset_blame_assigned();
+                                change_assigned.add_assigned(add_replace_blame.len.get());
+                                blame_assigned.reset_assigned();
                                 blame_iter.next();
                                 add_replace_blame = if let Some(mut blame) = blame_iter.peek().cloned() {
                                     debug!("Add replace loop next blame: {:?}", blame);
                                     blame.update_blame(&blame_assigned);
+                                    blame_assigned.add_blame(Some(blame.clone()));
                                     blame
                                 } else {
                                     continue 'change;
@@ -463,7 +476,7 @@ pub fn process_changes_forward(
                             }
                             false => {
                                 // Full Change Is Assigned
-                                lines_assigned.add_blame_assigned(lines_deleted - lines_assigned.get_change_assigned());
+                                blame_assigned.add_assigned(change_assigned.get_remaining());
                                 continue 'change;
                             }
                         }
