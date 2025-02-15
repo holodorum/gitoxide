@@ -182,8 +182,8 @@ impl BlameEntry {
     /// Update the `start_in_blamed_file` and `start_in_source_file` fields by the lines that are already assigned.
     pub(crate) fn update_blame(&mut self, offset: &LinesAssigned) {
         self.start_in_blamed_file += offset.get_blame_assigned();
-        self.start_in_source_file += offset.get_blame_assigned();
-        self.len = NonZeroU32::new(u32::from(self.len) - offset.get_blame_assigned()).unwrap();
+        self.start_in_source_file += offset.get_assigned();
+        self.len = NonZeroU32::new(u32::from(self.len) - offset.get_assigned()).unwrap();
     }
 }
 

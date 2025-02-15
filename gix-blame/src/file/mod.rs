@@ -379,9 +379,13 @@ pub fn process_changes_forward(
         lines_assigned.reset_change_assigned();
 
         'blame: while let Some(mut blame) = blame_iter.peek().cloned() {
+            debug!("Lines of Change Assigned: {:?}", change_assigned);
+            debug!("Lines of Blame Assigned: {:?}", blame_assigned);
+            debug!("Blame: {:?}", blame);
             blame.update_blame(&lines_assigned);
             match change.clone() {
                 Change::Unchanged(mut range) => {
+                    debug!("Handling Unchanged: {:?}", range);
                     range.start += lines_assigned.get_change_assigned();
                     match blame_fully_contained_by_change(&blame, &range.len().try_into().unwrap(), &lines_assigned) {
                         true => {
@@ -400,6 +404,8 @@ pub fn process_changes_forward(
                             continue 'blame;
                         }
                         false => {
+                            debug!("Change fully contained by blame");
+
                             // Full change assigned
                             updated_blames.push(BlameEntry {
                                 start_in_blamed_file: range.start,
@@ -408,6 +414,7 @@ pub fn process_changes_forward(
                                 commit_id: blame.commit_id,
                             });
 
+                                debug!("Blame and change are fully contained");
                             lines_assigned.add_blame_assigned(range.len().try_into().unwrap());
 
                             continue 'change;
@@ -415,6 +422,7 @@ pub fn process_changes_forward(
                     }
                 }
                 Change::Deleted(_start_deletion, lines_deleted) => {
+                    debug!("Handling Deleted: {:?}", lines_deleted);
                     match blame_fully_contained_by_change(&blame, &lines_deleted, &lines_assigned) {
                         true => {
                             // Full Blame Is Assigned
@@ -424,27 +432,30 @@ pub fn process_changes_forward(
                             continue 'blame;
                         }
                         false => {
-                            // Full Change Is Assigned
-                            lines_assigned.add_blame_assigned(lines_deleted - lines_assigned.get_change_assigned());
+                            debug!("Change fully contained by blame");
+                            if blame_assigned.add_assigned(change_assigned.get_remaining()) {
                             continue 'change;
                         }
                     }
                 }
                 Change::AddedOrReplaced(range, lines_deleted) => {
+                    debug!("Handling AddedOrReplaced: {:?}", range);
                     new_hunks_to_blame.push(UnblamedHunk {
                         range_in_blamed_file: range.clone(),
                         suspects: [(head_id, range)].into(),
                     });
                     let mut add_replace_blame = blame;
                     loop {
-                        match blame_fully_contained_by_change(&add_replace_blame, &lines_deleted, &lines_assigned) {
+                        debug!("In AddReplace Loop");
+                        match blame_fully_contained_by_change(&blame_assigned, &change_assigned) {
                             true => {
                                 // Full Blame Is Assigned
                                 lines_assigned.add_change_assigned(add_replace_blame.len.get());
                                 lines_assigned.reset_blame_assigned();
                                 blame_iter.next();
                                 add_replace_blame = if let Some(mut blame) = blame_iter.peek().cloned() {
-                                    blame.update_blame(&lines_assigned);
+                                    debug!("Add replace loop next blame: {:?}", blame);
+                                    blame.update_blame(&blame_assigned);
                                     blame
                                 } else {
                                     continue 'change;
