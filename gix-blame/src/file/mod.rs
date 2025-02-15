@@ -6,7 +6,7 @@ use std::ops::Range;
 use gix_hash::ObjectId;
 use gix_trace::debug;
 
-use crate::types::{BlameEntry, BlameLines, ChangeLines, Either, LineRange, LinesAssignedTrait};
+use crate::types::{BlameEntry, BlameLines, ChangeLines, Either, LineRange};
 use crate::types::{Change, Offset, UnblamedHunk};
 
 pub(super) mod function;
@@ -393,13 +393,13 @@ pub fn process_changes_forward(
             if blame_assigned.get_remaining(blame) == 0 {
                 debug!("Blame fully assigned");
                 blame_iter.next();
-                blame_assigned.reset_assigned();
+                blame_assigned.assigned.reset_assigned();
                 continue 'blame;
             } else {
                 debug!("Blame not fully assigned");
                 debug!("Blame before update: {:?}", blame);
-                blame.update_blame(&blame_assigned);
-                blame_assigned.reset_assigned();
+                blame.update_blame(&blame_assigned.assigned);
+                blame_assigned.assigned.reset_assigned();
                 debug!("After update: {:?}", blame);
             }
 
@@ -414,15 +414,15 @@ pub fn process_changes_forward(
                             debug!("Blame fully contained by change");
                             // Full blame assigned
                             updated_blames.push(BlameEntry {
-                                start_in_blamed_file: range.start + change_assigned.get_assigned(),
+                                start_in_blamed_file: range.start + change_assigned.assigned.get_assigned(),
                                 start_in_source_file: blame.start_in_source_file,
                                 len: blame.len,
                                 commit_id: blame.commit_id,
                             });
 
                             // Full Blame Is Assigned
-                            change_assigned.add_assigned(blame.len.get());
-                            blame_assigned.add_assigned(blame.len.get());
+                            change_assigned.assigned.add_assigned(blame.len.get());
+                            blame_assigned.assigned.add_assigned(blame.len.get());
                             continue 'blame;
                         }
                         false => {
@@ -430,12 +430,12 @@ pub fn process_changes_forward(
 
                             // Full change assigned
                             updated_blames.push(BlameEntry {
-                                start_in_blamed_file: range.start + change_assigned.get_assigned(),
+                                start_in_blamed_file: range.start + change_assigned.assigned.get_assigned(),
                                 start_in_source_file: blame.start_in_source_file,
                                 len: NonZeroU32::new(change_assigned.get_remaining(&change)).unwrap(),
                                 commit_id: blame.commit_id,
                             });
-                            blame_assigned.add_assigned(change_assigned.get_remaining(&change));
+                            blame_assigned.assigned.add_assigned(change_assigned.get_remaining(&change));
                             continue 'change;
                         }
                     }
@@ -445,13 +445,13 @@ pub fn process_changes_forward(
                     match blame_fully_contained_by_change(&blame_assigned, blame, &change_assigned, &change) {
                         true => {
                             debug!("Blame fully contained by change");
-                            change_assigned.add_assigned(blame.len.get());
-                            blame_assigned.add_assigned(blame.len.get());
+                            change_assigned.assigned.add_assigned(blame.len.get());
+                            blame_assigned.assigned.add_assigned(blame.len.get());
                             continue 'blame;
                         }
                         false => {
                             debug!("Change fully contained by blame");
-                            blame_assigned.add_assigned(change_assigned.get_remaining(&change));
+                            blame_assigned.assigned.add_assigned(change_assigned.get_remaining(&change));
                             continue 'change;
                         }
                     }
@@ -461,12 +461,12 @@ pub fn process_changes_forward(
                     match blame_fully_contained_by_change(&blame_assigned, blame, &change_assigned, &change) {
                         true => {
                             debug!("Blame fully contained by change");
-                            change_assigned.add_assigned(blame.len.get());
-                            blame_assigned.add_assigned(blame.len.get());
+                            change_assigned.assigned.add_assigned(blame.len.get());
+                            blame_assigned.assigned.add_assigned(blame.len.get());
                         }
                         false => {
                             debug!("Change fully contained by blame");
-                            blame_assigned.add_assigned(change_assigned.get_remaining(&change));
+                            blame_assigned.assigned.add_assigned(change_assigned.get_remaining(&change));
                             new_hunks_to_blame.push(UnblamedHunk {
                                 range_in_blamed_file: range.clone(),
                                 suspects: [(head_id, range)].into(),
