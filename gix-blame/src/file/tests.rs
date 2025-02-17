@@ -174,6 +174,28 @@ mod blame_cache_to_hunks {
     }
 
     #[test]
+    fn add_or_replace_no_deletion() {
+        let cached_blames = single_blame_entry();
+        let changes = vec![
+            Change::Unchanged(0..2),
+            Change::AddedOrReplaced(0..5, 0),
+            Change::Unchanged(6..9),
+        ];
+        let expected_blame = vec![
+            BlameEntry::new(0..2, 0..2, zero_sha()),
+            BlameEntry::new(6..9, 2..5, zero_sha()),
+        ];
+        let expected_unblamed_hunks = vec![UnblamedHunk {
+            range_in_blamed_file: 0..5,
+            suspects: [(two_sha(), 0..5)].into(),
+        }];
+        let (updated_blame_entries, new_unblamed_hunks) =
+            process_changes_forward(cached_blames.clone(), changes, two_sha());
+        assert_eq!(updated_blame_entries, expected_blame);
+        assert_eq!(new_unblamed_hunks, expected_unblamed_hunks);
+    }
+
+    #[test]
     fn multiple_blames_no_change() {
         let cached_blames = multiple_blame_entries();
         let changes = vec![Change::Unchanged(0..10)];

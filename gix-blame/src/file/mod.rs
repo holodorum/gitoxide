@@ -386,10 +386,7 @@ pub fn process_changes_forward(
 
         'blame: while let Some(blame) = blame_iter.peek_mut() {
             debug!("-----Blame Loop-----");
-            if change_assigned.get_remaining(&change) == 0 {
-                break 'change;
-            }
-            debug!("Remaining Blame Lines: {:?}", blame_assigned.get_remaining(&blame));
+            debug!("Remaining Blame Lines: {:?}", blame_assigned.get_remaining(blame));
             if blame_assigned.get_remaining(blame) == 0 {
                 debug!("Blame fully assigned");
                 blame_iter.next();
@@ -435,7 +432,9 @@ pub fn process_changes_forward(
                                 len: NonZeroU32::new(change_assigned.get_remaining(&change)).unwrap(),
                                 commit_id: blame.commit_id,
                             });
-                            blame_assigned.assigned.add_assigned(change_assigned.get_remaining(&change));
+                            blame_assigned
+                                .assigned
+                                .add_assigned(change_assigned.get_remaining(&change));
                             continue 'change;
                         }
                     }
@@ -451,22 +450,33 @@ pub fn process_changes_forward(
                         }
                         false => {
                             debug!("Change fully contained by blame");
-                            blame_assigned.assigned.add_assigned(change_assigned.get_remaining(&change));
+                            blame_assigned
+                                .assigned
+                                .add_assigned(change_assigned.get_remaining(&change));
                             continue 'change;
                         }
                     }
                 }
-                Change::AddedOrReplaced(range, _lines_deleted) => {
+                Change::AddedOrReplaced(range, lines_deleted) => {
                     debug!("Handling AddedOrReplaced: {:?}", range);
                     match blame_fully_contained_by_change(&blame_assigned, blame, &change_assigned, &change) {
                         true => {
                             debug!("Blame fully contained by change");
                             change_assigned.assigned.add_assigned(blame.len.get());
                             blame_assigned.assigned.add_assigned(blame.len.get());
+                            // Edge case where we would never get to the false arm
+                            if lines_deleted == 0 {
+                                new_hunks_to_blame.push(UnblamedHunk {
+                                    range_in_blamed_file: range.clone(),
+                                    suspects: [(head_id, range)].into(),
+                                });
+                            }
                         }
                         false => {
                             debug!("Change fully contained by blame");
-                            blame_assigned.assigned.add_assigned(change_assigned.get_remaining(&change));
+                            blame_assigned
+                                .assigned
+                                .add_assigned(change_assigned.get_remaining(&change));
                             new_hunks_to_blame.push(UnblamedHunk {
                                 range_in_blamed_file: range.clone(),
                                 suspects: [(head_id, range)].into(),
@@ -475,6 +485,9 @@ pub fn process_changes_forward(
                         }
                     }
                 }
+            }
+            if change_assigned.get_remaining(&change) == 0 {
+                continue 'change;
             }
         }
     }
