@@ -54,7 +54,7 @@ mod blame_cache_to_hunks {
         let changes = vec![Change::Unchanged(0..5)];
 
         let (updated_blame_entries, new_unblamed_hunks) =
-            process_changes_forward(cached_blames.clone(), changes, one_sha());
+            process_changes_forward(&cached_blames, changes, one_sha());
         assert_eq!(updated_blame_entries, cached_blames);
         assert!(new_unblamed_hunks.is_empty());
     }
@@ -65,7 +65,7 @@ mod blame_cache_to_hunks {
         let changes = vec![Change::Deleted(0, 5)];
         let expected_blame = vec![];
         let (updated_blame_entries, new_unblamed_hunks) =
-            process_changes_forward(cached_blames.clone(), changes, one_sha());
+            process_changes_forward(&cached_blames, changes, one_sha());
         assert_eq!(updated_blame_entries, expected_blame);
         assert!(new_unblamed_hunks.is_empty());
     }
@@ -76,7 +76,7 @@ mod blame_cache_to_hunks {
         let changes = vec![Change::Deleted(0, 3), Change::Unchanged(0..2)];
         let expected_blame = vec![BlameEntry::new(0..2, 3..5, zero_sha())];
         let (updated_blame_entries, new_unblamed_hunks) =
-            process_changes_forward(cached_blames.clone(), changes, one_sha());
+            process_changes_forward(&cached_blames, changes, one_sha());
         assert_eq!(updated_blame_entries, expected_blame);
         assert!(new_unblamed_hunks.is_empty());
     }
@@ -87,7 +87,7 @@ mod blame_cache_to_hunks {
         let changes = vec![Change::Unchanged(0..2), Change::Deleted(0, 3)];
         let expected_blame = vec![BlameEntry::new(0..2, 0..2, zero_sha())];
         let (updated_blame_entries, new_unblamed_hunks) =
-            process_changes_forward(cached_blames.clone(), changes, one_sha());
+            process_changes_forward(&cached_blames, changes, one_sha());
         assert_eq!(updated_blame_entries, expected_blame);
         assert!(new_unblamed_hunks.is_empty());
     }
@@ -101,7 +101,7 @@ mod blame_cache_to_hunks {
             BlameEntry::new(1..2, 4..5, zero_sha()),
         ];
         let (updated_blame_entries, new_unblamed_hunks) =
-            process_changes_forward(cached_blames.clone(), changes, one_sha());
+            process_changes_forward(&cached_blames, changes, one_sha());
         assert_eq!(updated_blame_entries, expected_blame);
         assert!(new_unblamed_hunks.is_empty());
     }
@@ -116,7 +116,7 @@ mod blame_cache_to_hunks {
             suspects: [(two_sha(), 0..5)].into(),
         }];
         let (updated_blame_entries, new_unblamed_hunks) =
-            process_changes_forward(cached_blames.clone(), changes, two_sha());
+            process_changes_forward(&cached_blames, changes, two_sha());
         assert_eq!(updated_blame_entries, expected_blame);
         assert_eq!(new_unblamed_hunks, expected_unblamed_hunks);
     }
@@ -131,7 +131,7 @@ mod blame_cache_to_hunks {
             suspects: [(two_sha(), 0..5)].into(),
         }];
         let (updated_blame_entries, new_unblamed_hunks) =
-            process_changes_forward(cached_blames.clone(), changes, two_sha());
+            process_changes_forward(&cached_blames, changes, two_sha());
         assert_eq!(updated_blame_entries, expected_blame);
         assert_eq!(new_unblamed_hunks, expected_unblamed_hunks);
     }
@@ -146,7 +146,7 @@ mod blame_cache_to_hunks {
             suspects: [(two_sha(), 0..5)].into(),
         }];
         let (updated_blame_entries, new_unblamed_hunks) =
-            process_changes_forward(cached_blames.clone(), changes, two_sha());
+            process_changes_forward(&cached_blames, changes, two_sha());
         assert_eq!(updated_blame_entries, expected_blame);
         assert_eq!(new_unblamed_hunks, expected_unblamed_hunks);
     }
@@ -168,7 +168,7 @@ mod blame_cache_to_hunks {
             suspects: [(two_sha(), 0..5)].into(),
         }];
         let (updated_blame_entries, new_unblamed_hunks) =
-            process_changes_forward(cached_blames.clone(), changes, two_sha());
+            process_changes_forward(&cached_blames, changes, two_sha());
         assert_eq!(updated_blame_entries, expected_blame);
         assert_eq!(new_unblamed_hunks, expected_unblamed_hunks);
     }
@@ -190,7 +190,7 @@ mod blame_cache_to_hunks {
             suspects: [(two_sha(), 0..5)].into(),
         }];
         let (updated_blame_entries, new_unblamed_hunks) =
-            process_changes_forward(cached_blames.clone(), changes, two_sha());
+            process_changes_forward(&cached_blames, changes, two_sha());
         assert_eq!(updated_blame_entries, expected_blame);
         assert_eq!(new_unblamed_hunks, expected_unblamed_hunks);
     }
@@ -204,7 +204,7 @@ mod blame_cache_to_hunks {
             BlameEntry::new(5..10, 0..5, one_sha()),
         ];
         let (updated_blame_entries, new_unblamed_hunks) =
-            process_changes_forward(cached_blames.clone(), changes, one_sha());
+            process_changes_forward(&cached_blames, changes, one_sha());
         assert_eq!(updated_blame_entries, expected_blame);
         assert!(new_unblamed_hunks.is_empty());
     }
@@ -218,7 +218,7 @@ mod blame_cache_to_hunks {
             BlameEntry::new(5..6, 0..1, one_sha()),
         ];
         let (updated_blame_entries, new_unblamed_hunks) =
-            process_changes_forward(cached_blames.clone(), changes, one_sha());
+            process_changes_forward(&cached_blames, changes, one_sha());
         assert_eq!(updated_blame_entries, expected_blame);
         assert!(new_unblamed_hunks.is_empty());
     }
@@ -232,7 +232,7 @@ mod blame_cache_to_hunks {
             BlameEntry::new(1..6, 0..5, one_sha()),
         ];
         let (updated_blame_entries, new_unblamed_hunks) =
-            process_changes_forward(cached_blames.clone(), changes, one_sha());
+            process_changes_forward(&cached_blames, changes, one_sha());
         assert_eq!(updated_blame_entries, expected_blame);
         assert!(new_unblamed_hunks.is_empty());
     }
@@ -246,7 +246,7 @@ mod blame_cache_to_hunks {
             BlameEntry::new(4..6, 3..5, one_sha()),
         ];
         let (updated_blame_entries, new_unblamed_hunks) =
-            process_changes_forward(cached_blames.clone(), changes, one_sha());
+            process_changes_forward(&cached_blames, changes, one_sha());
         assert_eq!(updated_blame_entries, expected_blame);
         assert!(new_unblamed_hunks.is_empty());
     }
@@ -275,7 +275,7 @@ mod blame_cache_to_hunks {
             },
         ];
         let (updated_blame_entries, new_unblamed_hunks) =
-            process_changes_forward(cached_blames.clone(), changes, two_sha());
+            process_changes_forward(&cached_blames, changes, two_sha());
         assert_eq!(updated_blame_entries, expected_blame);
         assert_eq!(new_unblamed_hunks, expected_unblamed_hunks);
     }

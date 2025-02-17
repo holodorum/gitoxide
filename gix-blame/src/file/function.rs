@@ -68,7 +68,7 @@ pub fn file(
     suspect: ObjectId,
     cache: Option<gix_commitgraph::Graph>,
     resource_cache: &mut gix_diff::blob::Platform,
-    blame_cache: Option<BlameCacheObject>,
+    blame_cache: Option<&BlameCacheObject>,
     file_path: &BStr,
     range: Option<Range<u32>>,
 ) -> Result<Outcome, Error> {
@@ -109,7 +109,7 @@ pub fn file(
                 &mut stats,
             )?;
             debug!("Changes: {:#?}", changes);
-            let (blame_entries, hunks_to_blame) = process_changes_forward(blame_cache.entries, changes, suspect);
+            let (blame_entries, hunks_to_blame) = process_changes_forward(&blame_cache.entries, changes, suspect);
             debug!("Blame entries: {:#?}", blame_entries);
             debug!("Hunks to blame: {:#?}", hunks_to_blame);
             (blame_entries, hunks_to_blame)

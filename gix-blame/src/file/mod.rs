@@ -361,7 +361,7 @@ fn process_changes(
 /// Consume `cached_blames` and `changes` to pair up matches ranges (also overlapping) with each other.
 /// Once a diff is found, it's pushed onto `new_hunks_to_blame`.
 pub fn process_changes_forward(
-    cached_blames: Vec<BlameEntry>,
+    cached_blames: &Vec<BlameEntry>,
     changes: Vec<Change>,
     head_id: ObjectId,
 ) -> (Vec<BlameEntry>, Vec<UnblamedHunk>) {
@@ -376,7 +376,8 @@ pub fn process_changes_forward(
 
     let mut updated_blames = Vec::new();
     let mut new_hunks_to_blame = Vec::new();
-    let mut blame_iter = cached_blames.into_iter().peekable();
+    // TODO This is a bit of a hack to get around borrowing issues.
+    let mut blame_iter = cached_blames.clone().into_iter().peekable();
 
     let mut blame_assigned = BlameLines::default();
     'change: for change in changes {
