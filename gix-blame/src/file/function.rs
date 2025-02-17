@@ -181,7 +181,7 @@ fn find_diff_cache(
         new_file_id,
         tree::EntryKind::Blob,
         file_path.as_bstr(),
-        blob::ResourceKind::OldOrSource,
+        blob::ResourceKind::NewOrDestination,
         &odb,
     )?;
     resource_cache.prepare_diff()?;
