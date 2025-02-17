@@ -1,5 +1,5 @@
 use super::{process_changes, process_changes_forward, Change, UnblamedHunk};
-use crate::types::BlameCache;
+use crate::types::BlameCacheObject;
 use crate::{BlameEntry, Error, Outcome, Statistics};
 use gix_diff::blob::{self, intern::TokenSource};
 use gix_diff::tree::Visit;
@@ -68,7 +68,7 @@ pub fn file(
     suspect: ObjectId,
     cache: Option<gix_commitgraph::Graph>,
     resource_cache: &mut gix_diff::blob::Platform,
-    blame_cache: Option<BlameCache>,
+    blame_cache: Option<BlameCacheObject>,
     file_path: &BStr,
     range: Option<Range<u32>>,
 ) -> Result<Outcome, Error> {

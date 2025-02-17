@@ -117,8 +117,9 @@ impl SubAssign<u32> for Offset {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
 /// A cache of blame entries that can be used to speed up subsequent blames.
-pub struct BlameCache {
+pub struct BlameCacheObject {
     /// The entries of the cache.
     pub entries: Vec<BlameEntry>,
     /// The commit that was blamed to produce these entries.
