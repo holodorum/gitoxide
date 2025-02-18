@@ -8,7 +8,7 @@ use gix_object::{
     bstr::{BStr, BString, ByteSlice},
     tree, FindExt,
 };
-use gix_trace::debug;
+use gix_trace::{debug, info};
 use gix_traverse::commit::find as find_commit;
 use smallvec::SmallVec;
 use std::num::NonZeroU32;
@@ -97,21 +97,34 @@ pub fn file(
 
     let (blame_entries, mut hunks_to_blame) = match blame_cache {
         Some(blame_cache) => {
-            let changes = find_diff_cache(
+            let changes = blob_changes(
                 &odb,
-                &blame_cache.cache_id,
-                &suspect,
-                file_path,
-                cache.as_ref(),
                 resource_cache,
-                &mut buf,
-                &mut buf2,
+                blame_cache.cache_id,
+                suspect,
+                file_path.as_bstr(),
                 &mut stats,
             )?;
+
+            if changes.iter().all(|change| matches!(change, Change::Unchanged(_))) {
+                println!("Early return!");
+                return Ok(Outcome {
+                    entries: blame_cache.entries.clone(),
+                    blob: blamed_file_blob,
+                    statistics: stats,
+                });
+            }
+            debug!("Existing Cache {:?}: ", blame_cache.entries);
             debug!("Changes: {:#?}", changes);
             let (blame_entries, hunks_to_blame) = process_changes_forward(&blame_cache.entries, changes, suspect);
-            debug!("Blame entries: {:#?}", blame_entries);
-            debug!("Hunks to blame: {:#?}", hunks_to_blame);
+            if hunks_to_blame.is_empty() {
+                println!("Early return 2!");
+                return Ok(Outcome {
+                    entries: blame_entries,
+                    blob: blamed_file_blob,
+                    statistics: stats,
+                });
+            }
             (blame_entries, hunks_to_blame)
         }
         None => {
