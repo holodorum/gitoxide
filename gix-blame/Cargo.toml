@@ -25,6 +25,7 @@ gix-traverse = { version = "^0.44.0", path = "../gix-traverse" }
 
 smallvec = "1.10.0"
 thiserror = "2.0.0"
+serde = "1.0.217"
 
 [dev-dependencies]
 gix-ref = { path = "../gix-ref" }
