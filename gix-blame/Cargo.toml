@@ -13,6 +13,10 @@ rust-version = "1.70"
 [lib]
 doctest = false
 
+[features]
+## Data structures implement `serde::Serialize` and `serde::Deserialize`.
+serde = ["dep:serde"]
+
 [dependencies]
 gix-commitgraph = { version = "^0.26.0", path = "../gix-commitgraph" }
 gix-revwalk = { version = "^0.18.0", path = "../gix-revwalk" }
@@ -25,6 +29,7 @@ gix-traverse = { version = "^0.44.0", path = "../gix-traverse" }
 
 smallvec = "1.10.0"
 thiserror = "2.0.0"
+serde = { version = "1.0.114", optional = true, default-features = false, features = ["derive"] }
 
 [dev-dependencies]
 gix-ref = { path = "../gix-ref" }

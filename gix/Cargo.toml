@@ -297,6 +297,7 @@ serde = [
     "gix-transport?/serde",
     "gix-ref/serde",
     "gix-odb/serde",
+    "gix-blame/serde",
     "gix-index?/serde",
     "gix-mailmap?/serde",
     "gix-url/serde",

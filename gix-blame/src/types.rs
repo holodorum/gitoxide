@@ -118,6 +118,7 @@ impl SubAssign<u32> for Offset {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// A cache of blame entries that can be used to speed up subsequent blames.
 pub struct BlameCacheObject {
     /// The entries of the cache.
@@ -131,6 +132,7 @@ pub struct BlameCacheObject {
 /// Both ranges are of the same size, but may use different [starting points](Range::start). Naturally,
 /// they have the same content, which is the reason they are in what is returned by [`file()`](crate::file()).
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BlameEntry {
     /// The index of the token in the *Blamed File* (typically lines) where this entry begins.
     pub start_in_blamed_file: u32,
