@@ -357,7 +357,7 @@ fn process_changes(
     new_hunks_to_blame
 }
 
-/// Consume `cached_blames` and `changes`. With the changes we update the cached blames. 
+/// Consume `cached_blames` and `changes`. With the changes we update the cached blames.
 /// This function returns the updated blames and the new hunks to blame.
 fn update_blame_with_changes(
     cached_blames: Vec<BlameEntry>,
@@ -453,7 +453,7 @@ fn update_blame_with_changes(
                         }
                         false => {
                             new_hunks_to_blame.push(new_unblamed_hunk(range, head_id));
-                            
+
                             blame_assigned
                                 .assigned
                                 .add_assigned(change_assigned.get_remaining(&change));
