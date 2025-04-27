@@ -10,7 +10,8 @@ use gix_traverse::commit::find as find_commit;
 use smallvec::SmallVec;
 
 use super::{process_changes, Change, UnblamedHunk};
-use crate::{BlameEntry, Error, Options, Outcome, Statistics};
+use crate::file::checkpoint::update_checkpoint_blames_with_changes;
+use crate::{BlameCheckpoint, BlameEntry, Error, Options, Outcome, Statistics};
 
 /// Produce a list of consecutive [`BlameEntry`] instances to indicate in which commits the ranges of the file
 /// at `suspect:<file_path>` originated in.
@@ -71,6 +72,40 @@ pub fn file(
 
     let mut processor = BlameProcessor::new(&odb, cache, resource_cache, file_path, options)?;
     processor.set_blame_state(suspect)?;
+    processor.process_blame()
+}
+
+/// Process blame information starting from a checkpoint.
+///
+/// Uses the same core blame algorithm as `file()` but continues from a previously provided checkpoint,
+/// allowing for incremental blame operations by reusing previously computed information.
+///
+/// # Parameters
+///
+/// * `odb` - Access to database objects, used for diffing and object lookup
+/// * `suspect` - The commit to start blame processing from
+/// * `cache` - Optional commitgraph cache for performance
+/// * `blame_checkpoint` - Previous blame information to start from
+/// * `resource_cache` - Cache used for diffing trees
+/// * `file_path` - Path to the file being blamed (slash-separated, worktree-relative)
+/// * `options` - Options controlling the blame operation
+///
+/// # Returns
+///
+/// Returns an `Outcome` containing the blame entries and statistics, or an error if the operation fails.
+pub fn file_checkpoint(
+    odb: impl gix_object::Find + gix_object::FindHeader,
+    suspect: ObjectId,
+    cache: Option<gix_commitgraph::Graph>,
+    blame_checkpoint: BlameCheckpoint,
+    resource_cache: &mut gix_diff::blob::Platform,
+    file_path: &BStr,
+    options: Options,
+) -> Result<Outcome, Error> {
+    let _span = gix_trace::coarse!("gix_blame::file_checkpoint()", ?file_path, ?suspect);
+
+    let mut processor = BlameProcessor::new(&odb, cache, resource_cache, file_path, options)?;
+    processor.set_blame_state_from_checkpoint(blame_checkpoint, suspect)?;
     processor.process_blame()
 }
 
@@ -362,7 +397,7 @@ fn commit_time(commit: gix_traverse::commit::Either<'_, '_>) -> Result<CommitTim
     }
 }
 
-type ParentIds = SmallVec<[(gix_hash::ObjectId, i64); 2]>;
+type ParentIds = SmallVec<[(ObjectId, i64); 2]>;
 
 fn collect_parents(
     commit: gix_traverse::commit::Either<'_, '_>,
@@ -401,6 +436,10 @@ pub(crate) fn tokens_for_diffing(data: &[u8]) -> impl TokenSource<Token = &[u8]>
 }
 
 /// State maintained during the blame operation
+///
+/// Tracks both the current processing state and final results, including unblamed hunks,
+/// completed entries, file content, and statistics. Can be created either from scratch
+/// or from a checkpoint.
 struct BlameState {
     /// The current state of unblamed hunks that still need processing
     hunks_to_blame: Vec<UnblamedHunk>,
@@ -416,6 +455,10 @@ struct BlameState {
     previous_entry: Option<(ObjectId, ObjectId)>,
 }
 
+/// Processor for handling blame operations
+///
+/// Encapsulates the logic for processing blame operations, whether starting
+/// from scratch or continuing from a checkpoint.
 struct BlameProcessor<'a, T: gix_object::Find + gix_object::FindHeader> {
     odb: &'a T,
     commit_graph_cache: Option<gix_commitgraph::Graph>,
@@ -426,6 +469,7 @@ struct BlameProcessor<'a, T: gix_object::Find + gix_object::FindHeader> {
 }
 
 impl<'a, T: gix_object::Find + gix_object::FindHeader> BlameProcessor<'a, T> {
+    /// Creates a new blame processor with the given parameters
     fn new(
         odb: &'a T,
         commit_graph_cache: Option<gix_commitgraph::Graph>,
@@ -443,39 +487,114 @@ impl<'a, T: gix_object::Find + gix_object::FindHeader> BlameProcessor<'a, T> {
         })
     }
 
-    fn set_blame_state(&mut self, suspect: ObjectId) -> Result<(), Error>{
+    /// Sets up the initial blame state for processing from scratch
+    fn set_blame_state(&mut self, suspect: ObjectId) -> Result<(), Error> {
         let blame_state = self.create_blame_state(suspect)?;
         self.blame_state = Some(blame_state);
         Ok(())
     }
 
-    /// Set a new BlameState for the given suspect commit
-    fn create_blame_state(&self, suspect: ObjectId) -> Result<BlameState, Error> {
-        let (mut buf, mut buf2) = (Vec::new(), Vec::new());
-        let mut stats = Statistics::default();
-        let blamed_file_entry_id = find_path_entry_in_commit(
+    /// Sets up the initial blame state using information from a checkpoint
+    fn set_blame_state_from_checkpoint(
+        &mut self,
+        blame_checkpoint: BlameCheckpoint,
+        suspect: ObjectId,
+    ) -> Result<(), Error> {
+        let blame_state = self.create_blame_state_from_checkpoint(blame_checkpoint, suspect)?;
+        self.blame_state = Some(blame_state);
+        Ok(())
+    }
+
+    /// Helper function to find a file entry in a commit and return its blob data
+    fn find_file_entry_and_blob(
+        &self,
+        commit_id: &ObjectId,
+        stats: &mut Statistics,
+        buf: &mut Vec<u8>,
+        buf2: &mut Vec<u8>,
+    ) -> Result<(ObjectId, Vec<u8>), Error> {
+        let entry_id = find_path_entry_in_commit(
             self.odb,
-            &suspect,
+            commit_id,
             self.file_path,
             self.commit_graph_cache.as_ref(),
-            &mut buf,
-            &mut buf2,
-            &mut stats,
+            buf,
+            buf2,
+            stats,
         )?
         .ok_or_else(|| Error::FileMissing {
             file_path: self.file_path.to_owned(),
-            commit_id: suspect,
+            commit_id: *commit_id,
         })?;
 
-        let blamed_file_blob = self.odb.find_blob(&blamed_file_entry_id, &mut buf)?.data.to_vec();
+        let blob_data = self.odb.find_blob(&entry_id, buf)?.data.to_vec();
+        Ok((entry_id, blob_data))
+    }
+
+    /// Creates the initial blame state from a checkpoint
+    ///
+    /// Sets up blame state by:
+    /// 1. Getting file contents from checkpoint and suspect commits
+    /// 2. Computing and applying changes
+    /// 3. Setting up remaining hunks for processing
+    fn create_blame_state_from_checkpoint(
+        &mut self,
+        blame_checkpoint: BlameCheckpoint,
+        suspect: ObjectId,
+    ) -> Result<BlameState, Error> {
+        let mut stats = Statistics::default();
+        let (mut buf, mut buf2) = (Vec::new(), Vec::new());
+
+        let (checkpoint_file_entry_id, _) =
+            self.find_file_entry_and_blob(&blame_checkpoint.checkpoint_commit_id, &mut stats, &mut buf, &mut buf2)?;
+
+        let (blamed_file_entry_id, blamed_file_blob) =
+            self.find_file_entry_and_blob(&suspect, &mut stats, &mut buf, &mut buf2)?;
+
+        let changes_with_checkpoint = blob_changes(
+            self.odb,
+            self.resource_cache,
+            checkpoint_file_entry_id,
+            blamed_file_entry_id,
+            self.file_path,
+            self.options.diff_algorithm,
+            &mut stats,
+        )?;
+
+        let mut blame_state = BlameState::empty(blamed_file_blob, suspect, stats);
+
+        // If there are no changes, we update the blame_state with the checkpoint entries.
+        // Because the range stays 0..0 we are returning early during processing
+        if changes_with_checkpoint
+            .iter()
+            .all(|change| matches!(change, Change::Unchanged(_)))
+        {
+            blame_state.set_out(blame_checkpoint.entries);
+            return Ok(blame_state);
+        }
+
+        let (blame_entries, hunks_to_blame) =
+            update_checkpoint_blames_with_changes(blame_checkpoint, changes_with_checkpoint, suspect);
+
+        blame_state.set_out(blame_entries);
+        if !hunks_to_blame.is_empty() {
+            blame_state.set_hunks(hunks_to_blame);
+        }
+        Ok(blame_state)
+    }
+
+    /// Set a new BlameState for the given suspect commit
+    fn create_blame_state(&self, suspect: ObjectId) -> Result<BlameState, Error> {
+        let mut stats = Statistics::default();
+        let (mut buf, mut buf2) = (Vec::new(), Vec::new());
+
+        let (_, blamed_file_blob) = self.find_file_entry_and_blob(&suspect, &mut stats, &mut buf, &mut buf2)?;
+
         let num_lines_in_blamed = tokens_for_diffing(&blamed_file_blob).tokenize().count() as u32;
 
         // Binary or otherwise empty?
         if num_lines_in_blamed == 0 {
-            // Create a [`BlameState`] with an empty range.
-            // This way we won't have `UnblamedHunk` and return early in `process_blame()`.
-            let empty_range = 0..0;
-            return Ok(BlameState::new(blamed_file_blob, vec![empty_range], suspect, 0, Some(stats)));
+            return Ok(BlameState::empty(blamed_file_blob, suspect, stats));
         }
 
         let ranges_in_blamed_file = self
@@ -497,7 +616,7 @@ impl<'a, T: gix_object::Find + gix_object::FindHeader> BlameProcessor<'a, T> {
     }
 
     fn process_blame(self) -> Result<Outcome, Error> {
-        let mut state = match self.blame_state{
+        let mut state = match self.blame_state {
             Some(state) => state,
             None => {
                 return Err(Error::BlameStateNotSet);
@@ -687,6 +806,13 @@ impl BlameState {
         }
     }
 
+    /// Create a BlameState with an empty range, used when there are no lines to blame
+    /// or when starting from a checkpoint
+    fn empty(blamed_file_blob: Vec<u8>, suspect: ObjectId, stats: Statistics) -> Self {
+        let empty_range = 0..0;
+        Self::new(blamed_file_blob, vec![empty_range], suspect, 0, Some(stats))
+    }
+
     /// Check if there are any remaining hunks to process
     fn has_unblamed_hunks(&self) -> bool {
         !self.hunks_to_blame.is_empty()
@@ -705,6 +831,14 @@ impl BlameState {
         }));
         self.hunks_to_blame = without_suspect;
         self.hunks_to_blame.is_empty()
+    }
+
+    fn set_out(&mut self, out: Vec<BlameEntry>) {
+        self.out = out;
+    }
+
+    fn set_hunks(&mut self, unblamed_hunks: Vec<UnblamedHunk>) {
+        self.hunks_to_blame = unblamed_hunks;
     }
 
     /// Process completed hunks for a suspect, moving them to the output
