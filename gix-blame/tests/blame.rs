@@ -194,7 +194,7 @@ macro_rules! mktest {
                 format!("{}.txt", $case).as_str().into(),
                 gix_blame::Options {
                     diff_algorithm: gix_diff::blob::Algorithm::Histogram,
-                    range: BlameRanges::default(),
+                    ranges: BlameRanges::default(),
                     since: None,
                 },
             )?
@@ -265,7 +265,7 @@ fn diff_disparity() {
             format!("{case}.txt").as_str().into(),
             gix_blame::Options {
                 diff_algorithm: gix_diff::blob::Algorithm::Histogram,
-                range: BlameRanges::default(),
+                ranges: BlameRanges::default(),
                 since: None,
             },
         )
@@ -297,7 +297,7 @@ fn since() {
         "simple.txt".into(),
         gix_blame::Options {
             diff_algorithm: gix_diff::blob::Algorithm::Histogram,
-            range: BlameRanges::default(),
+            ranges: BlameRanges::default(),
             since: Some(gix_date::parse("2025-01-31", None).unwrap()),
         },
     )
@@ -332,7 +332,7 @@ mod blame_ranges {
             "simple.txt".into(),
             gix_blame::Options {
                 diff_algorithm: gix_diff::blob::Algorithm::Histogram,
-                range: BlameRanges::from_range(1..=2),
+                ranges: BlameRanges::from_range(1..=2),
                 since: None,
             },
         )
@@ -368,7 +368,7 @@ mod blame_ranges {
             "simple.txt".into(),
             gix_blame::Options {
                 diff_algorithm: gix_diff::blob::Algorithm::Histogram,
-                range: ranges,
+                ranges,
                 since: None,
             },
         )
@@ -401,7 +401,7 @@ mod blame_ranges {
             "simple.txt".into(),
             gix_blame::Options {
                 diff_algorithm: gix_diff::blob::Algorithm::Histogram,
-                range: ranges,
+                ranges,
                 since: None,
             },
         )
