@@ -355,10 +355,11 @@ mod blame_ranges {
             suspect,
         } = Fixture::new().unwrap();
 
-        let mut ranges = BlameRanges::new();
-        ranges.add_range(1..=2); // Lines 1-2
-        ranges.add_range(1..=1); // Duplicate range, should be ignored
-        ranges.add_range(4..=4); // Line 4
+        let ranges = BlameRanges::from_ranges(vec![
+            1..=2, // Lines 1-2
+            1..=1, // Duplicate range, should be ignored
+            4..=4, // Line 4
+        ]);
 
         let lines_blamed = gix_blame::file(
             &odb,
