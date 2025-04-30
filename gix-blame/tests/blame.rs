@@ -384,7 +384,7 @@ mod blame_ranges {
     }
 
     #[test]
-    fn multiple_ranges_usingfrom_ranges() {
+    fn multiple_ranges_using_from_ranges() {
         let Fixture {
             odb,
             mut resource_cache,
