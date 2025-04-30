@@ -332,7 +332,7 @@ mod blame_ranges {
             "simple.txt".into(),
             gix_blame::Options {
                 diff_algorithm: gix_diff::blob::Algorithm::Histogram,
-                ranges: BlameRanges::from_range(1..=2),
+                ranges: BlameRanges::from_one_based_inclusive_range(1..=2),
                 since: None,
             },
         )
@@ -355,10 +355,11 @@ mod blame_ranges {
             suspect,
         } = Fixture::new().unwrap();
 
-        let mut ranges = BlameRanges::new();
-        ranges.add_range(1..=2); // Lines 1-2
-        ranges.add_range(1..=1); // Duplicate range, should be ignored
-        ranges.add_range(4..=4); // Line 4
+        let ranges = BlameRanges::from_one_based_inclusive_ranges(vec![
+            1..=2, // Lines 1-2
+            1..=1, // Duplicate range, should be ignored
+            4..=4, // Line 4
+        ]);
 
         let lines_blamed = gix_blame::file(
             &odb,
@@ -391,7 +392,7 @@ mod blame_ranges {
             suspect,
         } = Fixture::new().unwrap();
 
-        let ranges = BlameRanges::from_ranges(vec![1..=2, 1..=1, 4..=4]);
+        let ranges = BlameRanges::from_one_based_inclusive_ranges(vec![1..=2, 1..=1, 4..=4]);
 
         let lines_blamed = gix_blame::file(
             &odb,
