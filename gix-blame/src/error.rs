@@ -29,8 +29,8 @@ pub enum Error {
     DiffTree(#[from] gix_diff::tree::Error),
     #[error("Invalid line range was given, line range is expected to be a 1-based inclusive range in the format '<start>,<end>'")]
     InvalidOneBasedLineRange,
-    #[error("Invalid line range was given, line range is expected to be a 0-based inclusive range in the format '<start>,<end>'")]
-    InvalidZeroBasedLineRange,
+    #[error("Invalid range addition was attempted. Cannot add a range to a whole file.")]
+    InvalidRangeAddition,
     #[error("Failure to decode commit during traversal")]
     DecodeCommit(#[from] gix_object::decode::Error),
     #[error("Failed to get parent from commitgraph during traversal")]

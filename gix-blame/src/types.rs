@@ -57,9 +57,9 @@ impl BlameRanges {
     ///
     /// @param range: A 1-based inclusive range.
     /// @return: A `BlameRanges` instance representing the range.
-    pub fn from_one_based_inclusive_range(range: RangeInclusive<u32>) -> Self {
-        let zero_based_range = Self::inclusive_to_zero_based_exclusive(range);
-        Self::PartialFile(vec![zero_based_range])
+    pub fn from_one_based_inclusive_range(range: RangeInclusive<u32>) -> Result<Self, Error> {
+        let zero_based_range = Self::inclusive_to_zero_based_exclusive(range)?;
+        Ok(Self::PartialFile(vec![zero_based_range]))
     }
 
     /// Create from multiple ranges.
@@ -71,9 +71,9 @@ impl BlameRanges {
     ///
     /// @param ranges: A vec of 1-based inclusive range.
     /// @return: A `BlameRanges` instance representing the range.
-    pub fn from_one_based_inclusive_ranges(ranges: Vec<RangeInclusive<u32>>) -> Self {
+    pub fn from_one_based_inclusive_ranges(ranges: Vec<RangeInclusive<u32>>) -> Result<Self, Error> {
         if ranges.is_empty() {
-            return Self::WholeFile;
+            return Ok(Self::WholeFile);
         }
 
         let zero_based_ranges = ranges
@@ -82,16 +82,19 @@ impl BlameRanges {
             .collect::<Vec<_>>();
         let mut result = Self::PartialFile(vec![]);
         for range in zero_based_ranges {
-            let _ = result.merge_range(range);
+            let _ = result.merge_zero_based_exclusive_range(range?);
         }
-        result
+        Ok(result)
     }
 
     /// Convert a 1-based inclusive range to a 0-based exclusive range.
-    fn inclusive_to_zero_based_exclusive(range: RangeInclusive<u32>) -> Range<u32> {
+    fn inclusive_to_zero_based_exclusive(range: RangeInclusive<u32>) -> Result<Range<u32>, Error> {
+        if range.start() == &0 {
+            return Err(Error::InvalidOneBasedLineRange);
+        }
         let start = range.start() - 1;
         let end = *range.end();
-        start..end
+        Ok(start..end)
     }
 }
 
@@ -101,44 +104,43 @@ impl BlameRanges {
     /// The range should be 1-based inclusive.
     /// If the new range overlaps with or is adjacent to an existing range,
     /// they will be merged into a single range.
-    pub fn add_range(&mut self, new_range: RangeInclusive<u32>) -> Result<(), Error> {
+    pub fn add_one_based_inclusive_range(&mut self, new_range: RangeInclusive<u32>) -> Result<(), Error> {
         match self {
             Self::PartialFile(_) => {
-                let zero_based_range = Self::inclusive_to_zero_based_exclusive(new_range);
-                self.merge_range(zero_based_range)
+                let zero_based_range = Self::inclusive_to_zero_based_exclusive(new_range)?;
+                self.merge_zero_based_exclusive_range(zero_based_range)
             }
-            _ => Err(Error::InvalidOneBasedLineRange),
+            Self::WholeFile => Err(Error::InvalidRangeAddition),
         }
     }
 
     /// Attempts to merge the new range with any existing ranges.
     /// If no merge is possible, add it as a new range.
-    fn merge_range(&mut self, new_range: Range<u32>) -> Result<(), Error> {
+    fn merge_zero_based_exclusive_range(&mut self, new_range: Range<u32>) -> Result<(), Error> {
         match self {
             Self::PartialFile(ref mut ranges) => {
-                // Check if this range can be merged with any existing range
-                for range in &mut *ranges {
-                    // Check if ranges overlap
-                    if new_range.start <= range.end && range.start <= new_range.end {
-                        *range = range.start.min(new_range.start)..range.end.max(new_range.end);
-                        return Ok(());
-                    }
-                    // Check if ranges are adjacent
-                    if new_range.start == range.end || range.start == new_range.end {
-                        *range = range.start.min(new_range.start)..range.end.max(new_range.end);
-                        return Ok(());
-                    }
-                }
-                // If no overlap or adjacency found, add it as a new range
-                ranges.push(new_range);
+                // Partition ranges into those that don't overlap/aren't adjacent and those that do
+                let (mut non_overlapping, overlapping): (Vec<_>, Vec<_>) = ranges.drain(..).partition(|range| {
+                    // Check if ranges DON'T overlap and are NOT adjacent
+                    new_range.end < range.start || range.end < new_range.start
+                });
+
+                // Fold all overlapping ranges together with the new range
+                let merged_range = overlapping.into_iter().fold(new_range, |acc, range| {
+                    acc.start.min(range.start)..acc.end.max(range.end)
+                });
+
+                // Add back non-overlapping ranges and the merged range
+                non_overlapping.push(merged_range);
+                *ranges = non_overlapping;
                 Ok(())
             }
-            _ => Err(Error::InvalidOneBasedLineRange),
+            Self::WholeFile => Err(Error::InvalidRangeAddition),
         }
     }
 
     /// Convert the ranges to a vector of `Range<u32>`.
-    pub fn to_ranges(&self, max_lines: u32) -> Vec<Range<u32>> {
+    pub fn to_zero_based_exclusive_ranges(&self, max_lines: u32) -> Vec<Range<u32>> {
         match self {
             Self::WholeFile => {
                 let full_range = 0..max_lines;
@@ -345,10 +347,9 @@ pub struct UnblamedHunk {
 }
 
 impl UnblamedHunk {
-    /// Create a new instance
-    pub fn new(range: Range<u32>, suspect: ObjectId) -> Self {
-        let range_start = range.start;
-        let range_end = range.end;
+    pub fn new(from_range_in_blamed_file: Range<u32>, suspect: ObjectId) -> Self {
+        let range_start = from_range_in_blamed_file.start;
+        let range_end = from_range_in_blamed_file.end;
 
         UnblamedHunk {
             range_in_blamed_file: range_start..range_end,

@@ -94,7 +94,7 @@ pub fn file(
         return Ok(Outcome::default());
     }
 
-    let ranges_to_blame = options.ranges.to_ranges(num_lines_in_blamed);
+    let ranges_to_blame = options.ranges.to_zero_based_exclusive_ranges(num_lines_in_blamed);
     let mut hunks_to_blame = ranges_to_blame
         .into_iter()
         .map(|range| UnblamedHunk::new(range, suspect))
